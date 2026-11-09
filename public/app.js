@@ -623,8 +623,9 @@ function renderShop() {
 }
 
 function packCardHTML(p, configured) {
-  return '<div class="pack-card">' +
+  return '<div class="pack-card tier-' + esc(p.id) + '">' +
     (p.badge ? '<span class="pack-badge">' + esc(p.badge) + "</span>" : "") +
+    '<div class="pack-art"><img src="pack-' + esc(p.id) + '.webp" alt="" loading="lazy"></div>' +
     "<h3>" + esc(p.name) + "</h3>" +
     '<div class="pack-gold">🪙 ' + p.gold + " gold</div>" +
     '<div class="pack-price">' + esc(p.priceLabel) + "</div>" +
@@ -734,7 +735,7 @@ async function startLesson(lessonId) {
 function renderTrainingSession(el) {
   const t = training;
   let html = '<div class="panel"><h2>' + esc(t.lessonTitle) + "</h2>" +
-    '<div class="coach-line"><span class="coach-avatar">P</span><div>' +
+    '<div class="coach-line"><span class="coach-avatar">' + icon("wizard") + "</span><div>" +
     "<p><strong>Coach Pell:</strong> " + esc(t.intro || "") + "</p></div></div>" +
     '<p class="step-progress">Step ' + (t.step + 1) + " of " + t.stepsTotal + "</p>" +
     '<p><strong>Your task:</strong> ' + esc(t.instruction || "") + "</p>";

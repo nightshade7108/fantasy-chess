@@ -240,6 +240,27 @@ function pickPromotion() {
   });
 }
 
+/* Castle-or-stride picker modal. A range-2 warlord stepping two squares
+   toward its archer is also a castling move; ask which the player means.
+   Resolves true (castle), false (plain two-square step), or null (cancel). */
+function pickCastleOrStride() {
+  return new Promise((resolve) => {
+    const root = $("#modal-root");
+    root.innerHTML =
+      '<div class="modal-backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="Castle or step?">' +
+      "<h2>Castle or step?</h2>" +
+      "<p>Your warlord can step two squares — or castle with the archer. Which do you mean?</p>" +
+      '<div class="promo-grid">' +
+      '<button class="promo-btn" data-castle="1">Castle with the archer</button>' +
+      '<button class="promo-btn" data-castle="0">Step two squares</button>' +
+      "</div>" +
+      '<div class="modal-actions"><button class="btn btn-ghost" data-cancel>Cancel</button></div>' +
+      "</div></div>";
+    root.querySelectorAll(".promo-btn").forEach((b) => b.addEventListener("click", () => { root.innerHTML = ""; resolve(b.dataset.castle === "1"); }));
+    root.querySelector("[data-cancel]").addEventListener("click", () => { root.innerHTML = ""; resolve(null); });
+  });
+}
+
 /* ---------------- Battle tab ---------------- */
 function renderBattle() {
   const el = $("#tab-battle");
@@ -418,7 +439,9 @@ function wireBattleBoard(m) {
         const dests = {};
         (res.moves || []).filter((mv) => mv.from === sq).forEach((mv) => {
           const target = cellAt(m.board, mv.to);
-          dests[mv.to] = target ? "capture" : "move";
+          // En passant lands on an empty square, so the board alone cannot
+          // tell it from a quiet move — the SAN carries the capture ("x").
+          dests[mv.to] = (target || (mv.san && mv.san.indexOf("x") !== -1)) ? "capture" : "move";
         });
         battleSel = { from: sq, dests: dests };
         if (!Object.keys(dests).length) toast("That hero has no legal moves right now.", true);
@@ -452,11 +475,22 @@ async function doBattleMove(from, to, kind) {
     } else {
       battleSel = null;
     }
+    // Castle or plain stride? A range-2 warlord stepping two squares toward
+    // its archer is also a castling move, and the server defaults to
+    // castling — so ask the player which one they mean when both exist.
+    let castle = null;
+    if (options.some((mv) => mv.castle) && options.some((mv) => !mv.castle)) {
+      castle = await pickCastleOrStride();
+      if (castle === null) return; // cancelled — keep selection
+      battleSel = null;
+    }
     // A new player move clears the previous AI-move highlight.
     lastAiMove = null;
+    const body = { from: from, to: to, promotion: promotion };
+    if (castle !== null) body.castle = castle;
     const out = await api("/api/match/move", {
       method: "POST",
-      body: JSON.stringify({ from: from, to: to, promotion: promotion }),
+      body: JSON.stringify(body),
     });
     // No AI reply (the player's own move ended the game): show the final
     // position at once.
@@ -479,7 +513,7 @@ async function doBattleMove(from, to, kind) {
       S.activeMatch = {
         ...prevMatch,
         board: out.boardAfterPlayer, turn: "b", status: "active",
-        history: hist, check: false,
+        history: hist, check: !!out.checkAfterPlayer,
       };
       renderBattle();
     }
@@ -534,17 +568,30 @@ async function animateAiMove(aiMove, boardBefore) {
     const hero = cell && cell.hero ? heroById(cell.hero) : null;
     return hero ? hero.rarity : "common";
   };
+  // The live board must still show the staged position (boardBefore). If
+  // something re-rendered it mid-animation — e.g. a stipend claim during
+  // the think pause — the live board already shows the final position:
+  // the origin square is empty and the mover already sits on its
+  // destination. Sliding a clone in then would duplicate the piece, so
+  // skip the animation and let the caller render the final board.
+  const liveFromChip = fromSq.querySelector(".chip");
+  if (!liveFromChip || !liveFromChip.classList.contains(fromCell.color)) return false;
+  const liveToChip = toSq.querySelector(".chip");
+  if (liveToChip && liveToChip.classList.contains(fromCell.color)) return false;
   // Highlight the squares so the eye finds the move even after the slide.
   fromSq.classList.add("ai-from");
   toSq.classList.add("ai-to");
   const toCell = cellAt(boardBefore, aiMove.to);
-  // The piece being captured, if any: on the destination square, or the
-  // en-passant pawn (origin rank, destination file).
+  // The piece being captured, if any: on the destination square, or — for
+  // en passant only — the pawn on the origin rank, destination file.
+  // Use the server's explicit enPassant flag. A soldier with Steady Step
+  // (diagStep) may also step one square diagonally into an EMPTY square;
+  // that is not a capture, and inferring en passant from the geometry
+  // would wrongly fade whatever piece sits on the adjacent square.
   let capturedSqEl = null;
   if (toCell && toCell.color === "w") {
     capturedSqEl = toSq;
-  } else if (fromCell.role === "soldier" && !toCell &&
-      Math.abs(FILES.indexOf(aiMove.to[0]) - FILES.indexOf(aiMove.from[0])) === 1) {
+  } else if (aiMove.enPassant) {
     capturedSqEl = boardEl.querySelector('[data-square="' + aiMove.to[0] + aiMove.from[1] + '"]');
   }
   // Castling: the king slides two files and the rook hops over it.

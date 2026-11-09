@@ -285,3 +285,309 @@ test("AI vs AI game reaches checkmate", { timeout: 120000 }, () => {
   }
   assert.equal(gameStatus(g), "checkmate", `AI game ended ${gameStatus(g)} after ${plies} plies`);
 });
+
+// ---- Helpers for hand-built positions (test-only) ----
+
+// Deterministic PRNG (mulberry32) so fuzz-style tests are reproducible.
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Build a position from [square, role, color, moved?] entries. Test-only:
+// mutates a clone the way the stalemate test does.
+function handBuilt(setup, turn, heroesW = PLAIN, heroesB = PLAIN, ep = null, castling = null) {
+  const g0 = createGame(PLAIN, PLAIN);
+  const s = JSON.parse(JSON.stringify(g0));
+  s.board = new Array(64).fill(null);
+  for (const [sq, role, color, moved] of setup) {
+    const f = fromAlgebraic(sq);
+    s.board[f.r * 8 + f.f] = { role, color, hero: "x", moved: moved !== false };
+  }
+  s.turn = turn;
+  s.ep = ep;
+  s.castling = castling || { wk: true, wq: true, bk: true, bq: true };
+  s.heroesW = { ...heroesW };
+  s.heroesB = { ...heroesB };
+  s.keys = [engine.positionKey(s)];
+  return s;
+}
+
+function hasMove(state, from, to) {
+  return legalMoves(state).some(
+    (m) => toAlgebraic(m.from) === from && toAlgebraic(m.to) === to
+  );
+}
+
+function moveKey(m) {
+  return `${m.from.r},${m.from.f}>${m.to.r},${m.to.f}|${m.promotion || ""}|${m.castle || ""}|${m.enPassant ? "ep" : ""}|${m.teleport ? "tp" : ""}`;
+}
+
+function snapshotState(s) {
+  return JSON.stringify({
+    board: s.board.map((p) => (p ? [p.role, p.color, p.hero, p.moved] : null)),
+    turn: s.turn, castling: s.castling, ep: s.ep,
+    halfmove: s.halfmove, fullmove: s.fullmove, keys: s.keys,
+  });
+}
+
+test("sanFor does not recurse through legalMoves (stack-overflow regression)", () => {
+  // Before the fix, sanFor() decided "+" vs "#" by calling legalMoves(),
+  // which re-entered sanFor() for every checking reply — one recursion
+  // level per consecutive checking ply. Checking sequences can CYCLE
+  // (a perpetual-check loop), so the recursion never terminated and the
+  // stack overflowed inside structuredClone/applyMove, crashing the
+  // request. This endgame position contains such a cycle and crashed the
+  // old engine with RangeError (max sanFor depth 3670 in a fuzz run):
+  //   a7-a8=Q+ Kg3 (the range-2 warlord itself attacks e3) Qf3+ Ke1
+  //   Qe2+ Kg3 Qf3+ ... — queen and warlord checking each other forever.
+  // The mate test now uses legalMovesFast(), which assigns no SANs and
+  // cannot recurse, so this position resolves in milliseconds.
+  const s = handBuilt([
+    ["b2", "wizard", "w"], ["e3", "warlord", "w"], ["g4", "soldier", "w"], ["a7", "soldier", "w"],
+    ["g2", "warlord", "b"], ["h3", "soldier", "b"], ["c5", "archer", "b"], ["h6", "soldier", "b"],
+  ], "w", PLAIN, STARTERS, null, { wk: false, wq: false, bk: false, bq: false });
+  const t0 = Date.now();
+  const moves = legalMoves(s);
+  assert.equal(moves.length, 17, "white has 17 legal moves");
+  assert.equal(gameStatus(s), "active");
+  assert.ok(Date.now() - t0 < 5000, `legalMoves on the perpetual-check position took ${Date.now() - t0}ms`);
+  assert.equal(findMove(s, "a7", "a8", "witch").san, "a8=Q+", "promoting to witch gives check");
+  assert.equal(findMove(s, "a7", "a8", "wizard").san, "a8=B+", "promoting to wizard gives check");
+});
+
+test("sanFor stays fast on a long checking chain in a full middlegame", () => {
+  // A second checking-rich position: a 7-ply chain of consecutive checking
+  // moves (h3-g4+ f4-e3 g4-f3+ e3-f3 b5-f5+ f1-f5 c5-f5+) in a knight-band
+  // middlegame, found by fuzzing. Pre-fix this took ~10x longer than
+  // post-fix because every checking move re-ran a full legalMoves.
+  const band = { soldier: "sera-shieldbearer", archer: "liana-longshot", wizard: "mira-frostweaver", knight: "brienne-oathbound", witch: "morwen-hexweaver", warlord: "dain-ironlord" };
+  const s = handBuilt([
+    ["d1", "witch", "w"], ["e1", "wizard", "w"], ["f1", "archer", "w"], ["g1", "wizard", "w"],
+    ["b2", "soldier", "w"], ["c2", "soldier", "w"], ["g2", "soldier", "w"], ["h2", "soldier", "w"],
+    ["f3", "soldier", "w"], ["g3", "soldier", "b"], ["h3", "wizard", "b"],
+    ["a4", "soldier", "w"], ["b4", "knight", "w"], ["c4", "soldier", "b"], ["d4", "soldier", "w"],
+    ["e4", "soldier", "w"], ["f4", "warlord", "w"],
+    ["b5", "archer", "b"], ["c5", "archer", "b"], ["b6", "soldier", "b"],
+    ["a7", "soldier", "b"], ["d7", "soldier", "b"], ["e7", "soldier", "b"],
+    ["f7", "warlord", "b"], ["g7", "soldier", "b"], ["h7", "soldier", "b"],
+    ["b8", "knight", "b"], ["f8", "wizard", "b"],
+  ], "b", band, band, 20, { wk: false, wq: false, bk: false, bq: false });
+  const t0 = Date.now();
+  const moves = legalMoves(s);
+  assert.equal(moves.length, 50, "black has 50 legal moves");
+  assert.equal(gameStatus(s), "active");
+  assert.ok(Date.now() - t0 < 5000, `legalMoves on a checking-rich position took ${Date.now() - t0}ms`);
+  const checking = moves.find((m) => toAlgebraic(m.from) === "h3" && toAlgebraic(m.to) === "g4");
+  assert.ok(checking, "black wizard h3-g4 is legal");
+  assert.equal(checking.san, "Bg4+", "checking move gets + (not # — white has replies)");
+});
+
+// ---- Pawn/bishop regression: a soldier must never move like a bishop ----
+// Open position used for every soldier hero: white soldiers on d4/e4/f4,
+// black soldiers on the 1-diagonal squares (c5, g5) and the 2-diagonal
+// squares (b6, d6, f6, h6); the 1-diagonal squares d5/e5/f5 and the
+// 2-diagonal squares c6/g6 are EMPTY, and e6 is empty for the march.
+function soldierProbePosition(soldierHero) {
+  const heroesW = { ...PLAIN, soldier: soldierHero };
+  return handBuilt([
+    ["a1", "warlord", "w"], ["d4", "soldier", "w"], ["e4", "soldier", "w"], ["f4", "soldier", "w"],
+    ["h8", "warlord", "b"], ["c5", "soldier", "b"], ["g5", "soldier", "b"],
+    ["b6", "soldier", "b"], ["d6", "soldier", "b"], ["f6", "soldier", "b"], ["h6", "soldier", "b"],
+  ], "w", heroesW, PLAIN);
+}
+
+const SOLDIER_HEROES = {
+  "bram-footman": { diagStep: true },
+  "sera-shieldbearer": { capStraight: true },
+  "kael-pikeman": { cap2Diag: true },
+  "aurora-dawnblade": { march2: true, diagStep: true },
+  "fenn-shepherd": { stepBack: true },
+  "odric-torchbearer": { diagStep: true },
+  "petra-sapper": { capStraight: true, diagStep: true },
+  "jory-lancer": { march2: true },
+  "selene-duelist": { capStraight: true, cap2Diag: true },
+  "cato-veteran": { march2: true, capStraight: true },
+  "isolde-stormblade": { march2: true, cap2Diag: true },
+  "theron-sunmarshal": { march2: true, diagStep: true, capStraight: true },
+};
+
+test("soldiers never move multi-square diagonally to an empty square (all 12 heroes)", () => {
+  for (const [hero, fx] of Object.entries(SOLDIER_HEROES)) {
+    const s = soldierProbePosition(hero);
+    const soldierMoves = legalMoves(s).filter((m) => m.piece === "soldier");
+    assert.ok(soldierMoves.length > 0, `${hero} has soldier moves`);
+    for (const m of soldierMoves) {
+      const dr = Math.abs(m.to.r - m.from.r);
+      const df = Math.abs(m.to.f - m.from.f);
+      // Headline invariant: a multi-square diagonal soldier move is only
+      // ever a capture (cap2Diag); it never lands on an empty square.
+      if (dr >= 2 && df >= 1) {
+        assert.ok(m.captured, `${hero}: soldier ${toAlgebraic(m.from)}-${toAlgebraic(m.to)} goes ${dr}x${df} diagonally without capturing`);
+      }
+    }
+    // Empty 2-diagonal squares are never reachable.
+    assert.equal(hasMove(s, "e4", "c6"), false, `${hero}: no e4-c6 to an empty square`);
+    assert.equal(hasMove(s, "e4", "g6"), false, `${hero}: no e4-g6 to an empty square`);
+    // 2-diagonal captures exist exactly for cap2Diag heroes, and only as captures.
+    for (const [from, to] of [["d4", "b6"], ["d4", "f6"], ["f4", "d6"], ["f4", "h6"]]) {
+      assert.equal(hasMove(s, from, to), !!fx.cap2Diag, `${hero}: ${from}-${to} (cap2Diag=${!!fx.cap2Diag})`);
+    }
+    // 2-square march from a non-start rank exists exactly for march2 heroes.
+    assert.equal(hasMove(s, "e4", "e6"), !!fx.march2, `${hero}: e4-e6 (march2=${!!fx.march2})`);
+    // 1-diagonal steps into empty squares exist exactly for diagStep heroes.
+    for (const [from, to] of [["d4", "e5"], ["e4", "d5"], ["e4", "f5"], ["f4", "e5"]]) {
+      assert.equal(hasMove(s, from, to), !!fx.diagStep, `${hero}: ${from}-${to} (diagStep=${!!fx.diagStep})`);
+    }
+    // 1-square backward step exists exactly for Fenn.
+    assert.equal(hasMove(s, "e4", "e3"), !!fx.stepBack, `${hero}: e4-e3 (stepBack=${!!fx.stepBack})`);
+  }
+});
+
+test("en passant pin: capturing e.p. must not expose the warlord", () => {
+  // White king a5 and black archer h5 share rank 5 with the white soldier
+  // e5 and the black soldier d5 (which just double-marched, ep=d6). The
+  // e.p. capture would remove both soldiers and open the rank.
+  const s = handBuilt([
+    ["a5", "warlord", "w"], ["e5", "soldier", "w"],
+    ["h8", "warlord", "b"], ["d5", "soldier", "b"], ["h5", "archer", "b"],
+  ], "w", PLAIN, PLAIN, fromAlgebraic("d6").r * 8 + fromAlgebraic("d6").f);
+  assert.equal(hasMove(s, "e5", "d6"), false, "e.p. capture is illegal: it exposes the warlord");
+  assert.equal(hasMove(s, "e5", "e6"), true, "the forward step stays legal: d5 still blocks the rank");
+});
+
+test("promotion by capture offers all four pieces and swaps role and hero", () => {
+  const s = handBuilt([
+    ["e1", "warlord", "w"], ["g7", "soldier", "w"],
+    ["e8", "warlord", "b"], ["h8", "archer", "b"],
+  ], "w");
+  for (const promo of ["archer", "wizard", "knight", "witch"]) {
+    assert.ok(findMove(s, "g7", "g8", promo), `g7-g8=${promo} is legal`);
+    assert.ok(findMove(s, "g7", "h8", promo), `g7xh8=${promo} is legal`);
+  }
+  const m = findMove(s, "g7", "h8", "witch");
+  const next = applyMove(s, m);
+  const promoted = next.board[fromAlgebraic("h8").r * 8 + fromAlgebraic("h8").f];
+  assert.equal(promoted.role, "witch", "soldier became a witch");
+  assert.equal(promoted.hero, PLAIN.witch, "promoted piece takes the equipped witch hero");
+  assert.equal(next.board[fromAlgebraic("g7").r * 8 + fromAlgebraic("g7").f], null, "origin vacated");
+});
+
+test("Dain cannot castle into check even though he castles through it", () => {
+  // Black queen g6 attacks g1 (destination) down the file but not f1.
+  const dain = { ...PLAIN, warlord: "dain-ironlord" };
+  const s = handBuilt([
+    ["e1", "warlord", "w"], ["h1", "archer", "w"], ["a1", "archer", "w"],
+    ["e8", "warlord", "b"], ["g6", "witch", "b"],
+  ], "w", dain, PLAIN);
+  assert.ok(engine.isSquareAttacked(s, fromAlgebraic("g1"), "b"), "g1 is attacked");
+  assert.ok(!engine.isSquareAttacked(s, fromAlgebraic("f1"), "b"), "f1 is safe");
+  assert.equal(legalMoves(s).filter((m) => m.castle === "K").length, 0, "no castling into check");
+});
+
+test("Liana's archers pass a friendly piece but never land on it", () => {
+  const liana = { ...PLAIN, archer: "liana-longshot" };
+  const s = handBuilt([
+    ["g1", "warlord", "w"], ["a1", "archer", "w"], ["a3", "soldier", "w"],
+    ["h8", "warlord", "b"], ["a5", "soldier", "b"],
+  ], "w", liana, PLAIN);
+  assert.ok(hasMove(s, "a1", "a4"), "slides past the friendly soldier to a4");
+  assert.ok(hasMove(s, "a1", "a5"), "captures beyond the friendly soldier");
+  assert.ok(!hasMove(s, "a1", "a3"), "cannot land on the friendly soldier");
+  // Attack detection matches: the archer attacks through its own soldier.
+  const s2 = handBuilt([
+    ["g1", "warlord", "w"], ["a1", "archer", "w"], ["a3", "soldier", "w"],
+    ["h8", "warlord", "b"], ["a5", "warlord", "b"],
+  ], "w", liana, PLAIN);
+  assert.ok(isCheck(s2, "b"), "black warlord on a5 is in check through the friendly soldier");
+});
+
+test("Sabine's wizards pass exactly one piece on a diagonal", () => {
+  const sabine = { ...PLAIN, wizard: "sabine-voidseer" };
+  const s = handBuilt([
+    ["g1", "warlord", "w"], ["c1", "wizard", "w"],
+    ["h8", "warlord", "b"], ["d2", "soldier", "b"], ["e3", "soldier", "b"],
+  ], "w", sabine, PLAIN);
+  assert.ok(hasMove(s, "c1", "e3"), "captures past the one piece on d2");
+  assert.ok(hasMove(s, "c1", "d2"), "captures the piece itself");
+  assert.ok(!hasMove(s, "c1", "f4"), "cannot pass two pieces to reach f4");
+});
+
+test("Roland's warlord cannot jump over a piece to use its range", () => {
+  const s = handBuilt([
+    ["e1", "warlord", "w"], ["e2", "soldier", "w"], ["e8", "warlord", "b"],
+  ], "w", STARTERS, PLAIN);
+  assert.ok(!hasMove(s, "e1", "e3"), "friendly soldier on e2 blocks the 2-square stride");
+  assert.ok(!hasMove(s, "e1", "e2"), "cannot land on a friendly soldier");
+  const s2 = handBuilt([
+    ["e1", "warlord", "w"], ["e2", "soldier", "b"], ["e8", "warlord", "b"],
+  ], "w", STARTERS, PLAIN);
+  assert.ok(hasMove(s2, "e1", "e2"), "captures the blocking enemy soldier");
+  assert.ok(!hasMove(s2, "e1", "e3"), "still cannot jump past it to e3");
+});
+
+test("Aurora's two-square march sets en passant, and it can be captured", () => {
+  const aurora = { ...STARTERS, soldier: "aurora-dawnblade" };
+  // Black soldier sits beside the DESTINATION (d6), as in classic e.p.
+  const s = handBuilt([
+    ["e1", "warlord", "w"], ["e4", "soldier", "w"],
+    ["e8", "warlord", "b"], ["d6", "soldier", "b"],
+  ], "w", aurora, PLAIN);
+  assert.ok(hasMove(s, "e4", "e6"), "marches two squares from a non-start rank");
+  const m = findMove(s, "e4", "e6");
+  const s2 = applyMove(s, m);
+  assert.equal(s2.ep, fromAlgebraic("e5").r * 8 + fromAlgebraic("e5").f, "ep square is the skipped e5");
+  assert.ok(hasMove(s2, "d6", "e5"), "black captures en passant");
+  const epm = findMove(s2, "d6", "e5");
+  assert.ok(epm.enPassant, "flagged as en passant");
+  const s3 = applyMove(s2, epm);
+  assert.equal(s3.board[fromAlgebraic("e6").r * 8 + fromAlgebraic("e6").f], null, "marched soldier is removed");
+  assert.equal(s3.board[fromAlgebraic("e5").r * 8 + fromAlgebraic("e5").f].role, "soldier", "capturer lands on e5");
+});
+
+test("doMove/undoMove perfectly restores state (castling, en passant, promotion)", () => {
+  const positions = [
+    // Both castles available.
+    handBuilt([["e1", "warlord", "w"], ["a1", "archer", "w"], ["h1", "archer", "w"], ["e8", "warlord", "b"]], "w"),
+    // En passant available.
+    handBuilt([["e1", "warlord", "w"], ["e5", "soldier", "w"], ["e8", "warlord", "b"], ["d5", "soldier", "b"]],
+      "w", PLAIN, PLAIN, fromAlgebraic("d6").r * 8 + fromAlgebraic("d6").f),
+    // Promotions available (quiet + capture).
+    handBuilt([["e1", "warlord", "w"], ["g7", "soldier", "w"], ["e8", "warlord", "b"], ["h8", "archer", "b"]], "w"),
+  ];
+  for (const s of positions) {
+    for (const m of legalMoves(s)) {
+      const before = snapshotState(s);
+      const undo = engine.doMove(s, m);
+      engine.undoMove(s, m, undo);
+      assert.equal(snapshotState(s), before, `undo restores state after ${m.piece} ${toAlgebraic(m.from)}-${toAlgebraic(m.to)}`);
+    }
+  }
+  // Seeded random games: every do/undo round-trips, fast and slow agree.
+  const rand = rng(20261109);
+  const bands = [PLAIN, STARTERS];
+  for (let game = 0; game < 4; game++) {
+    let g = createGame(bands[game % 2], bands[(game + 1) % 2]);
+    for (let ply = 0; ply < 120 && gameStatus(g) === "active"; ply++) {
+      const fast = engine.legalMovesFast(g);
+      const slow = legalMoves(g);
+      assert.deepEqual(
+        new Set(fast.map(moveKey)), new Set(slow.map(moveKey)),
+        `legalMoves vs legalMovesFast agree (game ${game} ply ${ply})`
+      );
+      assert.ok(fast.length > 0, "active position has legal moves");
+      const m = fast[Math.floor(rand() * fast.length)];
+      const before = snapshotState(g);
+      const undo = engine.doMove(g, m);
+      assert.equal(isCheck(g, m.color), false, "no move leaves the mover's warlord in check");
+      engine.undoMove(g, m, undo);
+      assert.equal(snapshotState(g), before, `undo restores state (game ${game} ply ${ply})`);
+      g = applyMove(g, m);
+    }
+  }
+});

@@ -174,11 +174,13 @@ function genSoldier(moves, state, from, piece, fx) {
     if (!inBoard(sq.r, sq.f)) continue;
     const target = state.board[idx(sq.r, sq.f)];
     if (target && target.color !== piece.color) pushSoldierMove(sq, target);
-    // En passant.
+    // En passant. (An e.p. capture can never land on the last rank, so it
+    // can never promote — but route it through pushSoldierMove anyway so a
+    // promotion would be generated if that ever became reachable.)
     if (state.ep !== null && idx(sq.r, sq.f) === state.ep) {
       const victim = state.board[idx(from.r, sq.f)];
       if (victim && victim.role === "soldier" && victim.color !== piece.color) {
-        moves.push(makeMove(state, from, sq, victim, { enPassant: true }));
+        pushSoldierMove(sq, victim, { enPassant: true });
       }
     }
     // Diagonal step into an empty square (empty only; never the ep square,
@@ -599,7 +601,11 @@ function sanFor(state, move) {
   const next = applyMove(state, move);
   const enemy = other(move.color);
   if (isCheck(next, enemy)) {
-    s += legalMoves(next).length === 0 ? "#" : "+";
+    // Use the fast generator here: legalMoves() assigns SANs via sanFor(),
+    // so calling it would recurse (sanFor -> legalMoves -> sanFor ...) and
+    // overflow the stack on long checking sequences / perpetual check.
+    // legalMovesFast() returns the same move set without SANs.
+    s += legalMovesFast(next).length === 0 ? "#" : "+";
   }
   return s;
 }

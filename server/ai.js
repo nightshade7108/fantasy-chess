@@ -4,7 +4,7 @@
 // bonuses. The search never runs longer than the difficulty's time cap
 // (hard cap ~2.5s at the top difficulty).
 
-const { legalMovesFast, doMove, undoMove, isCheck, insufficientMaterial } = require("./engine");
+const { legalMovesFast, doMove, undoMove, isCheck, insufficientMaterial, sanFor } = require("./engine");
 const { heroById } = require("./data/heroes");
 
 const MATE = 100000;
@@ -87,13 +87,19 @@ function search(state, depth, alpha, beta, deadline, ply) {
   return best;
 }
 
-// Returns a legal move object (from legalMovesFast) or null.
+// Returns a legal move object (from legalMovesFast, with SAN filled in)
+// or null.
 function chooseMove(state, difficultyId) {
   const cfg = DIFF_CONFIG[difficultyId] || DIFF_CONFIG.squire;
   const deadline = Date.now() + cfg.timeMs;
   const rootMoves = legalMovesFast(state);
   if (rootMoves.length === 0) return null;
-  if (rootMoves.length === 1) return rootMoves[0];
+  // legalMovesFast does not compute SAN; fill it in so callers (history,
+  // API responses) get a real move string instead of null.
+  if (rootMoves.length === 1) {
+    rootMoves[0].san = sanFor(state, rootMoves[0]);
+    return rootMoves[0];
+  }
 
   let bestList = rootMoves.map((m) => ({ move: m, score: 0 }));
   try {
@@ -122,11 +128,15 @@ function chooseMove(state, difficultyId) {
     // Out of time: keep the best result from the last completed depth.
   }
 
+  let chosen;
   if (cfg.random > 0 && Math.random() < cfg.random && bestList.length > 1) {
     const top = bestList.slice(0, Math.min(3, bestList.length));
-    return top[Math.floor(Math.random() * top.length)].move;
+    chosen = top[Math.floor(Math.random() * top.length)].move;
+  } else {
+    chosen = bestList[0].move;
   }
-  return bestList[0].move;
+  chosen.san = sanFor(state, chosen);
+  return chosen;
 }
 
 module.exports = { chooseMove, DIFF_CONFIG, evaluate };

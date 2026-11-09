@@ -251,6 +251,10 @@ function createApp(pool) {
       candidates.sort((a, b) => (b.enPassant - a.enPassant) || ((b.castle ? 1 : 0) - (a.castle ? 1 : 0)) || ((b.captured ? 1 : 0) - (a.captured ? 1 : 0)));
       const move = candidates[0];
       let next = engine.applyMove(state, move);
+      // Whether the player's move gives check — the client shows the staged
+      // board (after the player's move only) during the AI think pause, and
+      // the CHECK flag must not disappear for that beat.
+      const checkAfterPlayer = engine.isCheck(next, next.turn);
       // Board after the player's move only (before the AI replies) — the
       // client renders this first so the player's move lands instantly,
       // then animates the AI's reply on top of it.
@@ -293,6 +297,7 @@ function createApp(pool) {
         gameOver: finished,
         aiMove,
         boardAfterPlayer,
+        checkAfterPlayer,
         settlement,
       });
     } catch (e) { next(e); }

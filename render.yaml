@@ -1,0 +1,38 @@
+# Render blueprint for Fantasy Chess.
+# Deploy: push this repo to GitHub, then in Render choose "New → Blueprint"
+# and point it at the repo. Render creates the web service + Postgres below.
+# Cost: Starter web ($7/mo) + Starter Postgres ($6/mo) = ~$13/mo.
+# The Free database deletes itself after 30 days — test-only, not for launch.
+
+services:
+  - type: web
+    name: fantasy-chess
+    env: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: fantasy-chess-db
+          property: connectionString
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: OWNER_SETUP_TOKEN
+        generateValue: true
+      # PayPal: set these in the Render dashboard (Environment tab) with the
+      # LIVE Client ID + Secret from the PayPal Developer dashboard, or leave
+      # them unset and use the in-app Store Owner Setup panel instead.
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_ENV
+        value: live
+
+databases:
+  - name: fantasy-chess-db
+    plan: starter

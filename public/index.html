@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fantasy Chess — Battle with Heroes</title>
+<meta name="description" content="Fantasy Chess: real chess rules, collectible fantasy heroes, AI battles, Training Grounds and a gold shop.">
+<meta name="theme-color" content="#7c5cbf">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="app-header">
+  <div class="brand">
+    <img class="brand-mark" src="icon.svg" alt="Fantasy Chess emblem" width="48" height="48">
+    <div>
+      <h1>Fantasy Chess</h1>
+      <p class="tagline">Real chess rules. Fantasy heroes. One crown.</p>
+    </div>
+  </div>
+  <div class="header-stats" id="header-stats" aria-live="polite">
+    <span class="stat-pill gold-pill" title="Gold">🪙 <strong id="hdr-gold">—</strong> gold</span>
+    <span class="stat-pill" title="Battle record"><strong id="hdr-record">—</strong></span>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist" aria-label="Fantasy Chess sections">
+  <button class="tab-btn active" data-tab="battle" role="tab" aria-selected="true">Battle</button>
+  <button class="tab-btn" data-tab="gallery" role="tab" aria-selected="false">Gallery</button>
+  <button class="tab-btn" data-tab="shop" role="tab" aria-selected="false">Shop</button>
+  <button class="tab-btn" data-tab="training" role="tab" aria-selected="false">Training</button>
+  <button class="tab-btn" data-tab="guide" role="tab" aria-selected="false">Guide</button>
+</nav>
+
+<main>
+  <section id="tab-battle" class="tab-panel active" role="tabpanel" aria-label="Battle"></section>
+  <section id="tab-gallery" class="tab-panel" role="tabpanel" aria-label="Gallery"></section>
+  <section id="tab-shop" class="tab-panel" role="tabpanel" aria-label="Shop"></section>
+  <section id="tab-training" class="tab-panel" role="tabpanel" aria-label="Training"></section>
+  <section id="tab-guide" class="tab-panel" role="tabpanel" aria-label="Guide"></section>
+</main>
+
+<footer class="app-footer">
+  <p>Fantasy Chess — a standalone web game. Your progress lives in this browser (a cookie identifies your profile). Gold is only ever credited after PayPal verifies a payment.</p>
+</footer>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<div id="modal-root"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

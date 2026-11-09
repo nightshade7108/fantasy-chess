@@ -48,12 +48,21 @@ const silhouette = (role) => SILHOUETTES[role] || SILHOUETTES.soldier;
 /* ---------------- state ---------------- */
 let S = null;               // GET /api/state payload
 let currentTab = "battle";
-let battleSel = null;       // { from, dests: Map(to -> move) }
+let battleSel = null;       // { from, dests: {to: "move"|"capture"}, moves: [move objects] }
 let battleBusy = false;
 let lastSettlement = null;  // settlement object from the final move response
 let lastResultDiff = null;  // difficulty id of the finished match
 let lastAiMove = null;      // { from, to } of the most recent AI reply —
 // highlighted on the board until the player makes their next move.
+/* Static data (catalog, difficulties, shop packs) never changes during a
+   session, so it is fetched once and merged into every later slim
+   /api/state?full=0 response. That cuts each refresh from ~37KB to ~2.6KB. */
+let staticCache = null;     // { catalog, difficulties, packs }
+/* Legal moves for the current position, cached: the position only changes
+   when a move is made, so re-selecting pieces in the same position must
+   not hit the network again. Keyed by the board object reference + turn —
+   a new position always means a new board object from the server. */
+let movesCache = { board: null, turn: null, moves: null };
 const AI_THINK_MS = 750;    // beat after the player's move lands, before the enemy acts
 const AI_SLIDE_MS = 450;    // how long the enemy chip takes to slide to its square
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -82,9 +91,42 @@ async function api(path, opts) {
 }
 
 async function refreshState() {
-  S = await api("/api/state");
+  // After the first full load the static data is cached, so ask for the
+  // slim state (~2.6KB instead of ~37KB) and merge the cached statics back
+  // in. The board may have changed, so drop the cached legal moves too.
+  const useSlim = !!staticCache;
+  const body = await api(useSlim ? "/api/state?full=0" : "/api/state");
+  if (!useSlim) {
+    staticCache = {
+      catalog: body.catalog,
+      difficulties: body.difficulties,
+      packs: (body.shop && body.shop.packs) || [],
+    };
+    S = body;
+  } else {
+    S = body;
+    S.catalog = staticCache.catalog;
+    S.difficulties = staticCache.difficulties;
+    S.shop = S.shop || {};
+    S.shop.packs = staticCache.packs;
+  }
+  movesCache = { board: null, turn: null, moves: null };
   renderHeader();
   renderTab(currentTab);
+}
+
+/* Legal moves for the current position. Cached: the position only changes
+   when a move is made, so re-selecting pieces in the same position must
+   not hit the network again. */
+async function getMoves() {
+  const m = S.activeMatch;
+  if (!m) return [];
+  if (movesCache.moves && movesCache.board === m.board && movesCache.turn === m.turn) {
+    return movesCache.moves;
+  }
+  const res = await api("/api/match/moves");
+  movesCache = { board: m.board, turn: m.turn, moves: res.moves || [] };
+  return movesCache.moves;
 }
 
 function toast(msg, isError) {
@@ -342,6 +384,7 @@ function matchHTML(m, diff) {
     '<p class="small muted" style="text-align:center">You are White (ivory), at the bottom. The enemy is slate, at the top.</p>' +
     "</div>" +
     '<div class="side-col">' +
+    '<div id="sel-dialog">' + selectedMovesHTML() + "</div>" +
     "<h3>Move history</h3>" +
     '<div class="history-box">' + historyHTML(m.history) + "</div>" +
     '<p style="margin-top:1rem"><button class="btn btn-danger" id="abandon-match">Abandon battle (no refund)</button></p>' +
@@ -353,6 +396,95 @@ function matchHTML(m, diff) {
     capturedRowHTML("You captured", caps.b, "b") +
     capturedRowHTML("Enemy captured", caps.w, "w") +
     "</div></div>";
+}
+
+/* The selected-character dialog: what the selected hero can do, in plain
+   language. It lives in the side column beside the board, updates when a
+   different piece is selected, and disappears on deselect or after a move.
+   Every ability affects movement (see the fx glossary in heroes.js), so the
+   ability line is always shown. */
+function selectedMovesHTML() {
+  if (!battleSel || !S.activeMatch) return "";
+  const m = S.activeMatch;
+  const cell = cellAt(m.board, battleSel.from);
+  if (!cell) return "";
+  const hero = cell.hero ? heroById(cell.hero) : null;
+  const name = hero ? hero.name : ROLE_LABEL[cell.role];
+  const byDest = {};
+  (battleSel.moves || []).forEach((mv) => {
+    (byDest[mv.to] = byDest[mv.to] || []).push(mv);
+  });
+  const dests = Object.keys(byDest).sort();
+  let items = "";
+  dests.forEach((to) => {
+    items += "<li>" + esc(describeMovesTo(byDest[to], to, battleSel.from, m.board)) + "</li>";
+  });
+  if (!dests.length) items = "<li>No legal moves right now.</li>";
+  return '<div class="sel-dialog" role="status" aria-live="polite">' +
+    '<div class="sel-head">' + miniChipHTML({ role: cell.role, color: cell.color, hero: cell.hero }) +
+    "<div><strong>" + esc(name) + "</strong><br><span class='muted small'>" + esc(ROLE_LABEL[cell.role]) +
+    (hero ? " · " + esc(RARITY_LABEL[hero.rarity]) : "") + " · " + esc(battleSel.from) + "</span></div></div>" +
+    (hero ? '<p class="sel-ability">✦ ' + esc(hero.ability) + "</p>" : "") +
+    "<p><strong>Possible moves (" + dests.length + "):</strong></p>" +
+    '<ul class="sel-moves">' + items + "</ul></div>";
+}
+
+/* Plain-language description of every legal move to one destination square.
+   movesTo is the list of move objects landing on `to` (there can be several
+   when castling, striding and promoting overlap). */
+function describeMovesTo(movesTo, to, from, board) {
+  const hasCastle = movesTo.some((mv) => mv.castle);
+  const hasPlain = movesTo.some((mv) => !mv.castle);
+  const hasPromo = movesTo.some((mv) => mv.promotion);
+  if (hasCastle && hasPlain) return "Castle with the archer, or step two squares to " + to;
+  if (hasCastle) return "Castle with the archer to " + to;
+  const mv = movesTo[0];
+  const isCapture = mv.san && mv.san.indexOf("x") !== -1;
+  const promoSuffix = " — choose Archer, Wizard, Knight or Witch";
+  if (isCapture) {
+    const target = cellAt(board, to);
+    let who;
+    if (target) {
+      const tHero = target.hero ? heroById(target.hero) : null;
+      who = tHero ? tHero.name + " (" + ROLE_LABEL[target.role] + ")" : "the " + ROLE_LABEL[target.role];
+    } else {
+      // En passant: the destination is empty; the captured soldier sits on
+      // the origin rank, destination file.
+      const capSq = to[0] + from[1];
+      const capCell = cellAt(board, capSq);
+      const capHero = capCell && capCell.hero ? heroById(capCell.hero) : null;
+      who = capHero
+        ? "en passant — takes " + capHero.name + " (" + ROLE_LABEL[capCell.role] + ") on " + capSq
+        : "en passant on " + capSq;
+    }
+    if (hasPromo) return "Capture " + who + " on " + to + " and promote" + promoSuffix;
+    return "Capture " + who + " on " + to;
+  }
+  if (hasPromo) return "Promote on " + to + promoSuffix;
+  return "Move to " + to;
+}
+
+/* Update only the selection highlights and the dialog — no full tab
+   re-render. Tapping a piece is the hottest interaction in a battle, and
+   rebuilding the whole tab (64 squares, warbands, history) on every tap
+   is what made it feel laggy. Falls back to renderBattle if the board
+   is not in the DOM. The ai-from/ai-to/check classes are left untouched. */
+function updateSelectionUI() {
+  const boardEl = $("#tab-battle .board");
+  const dialogEl = $("#sel-dialog");
+  if (!boardEl) { renderBattle(); return; }
+  $$(".sq.selected, .sq.dest, .sq.dest-capture", boardEl).forEach((el) => {
+    el.classList.remove("selected", "dest", "dest-capture");
+  });
+  if (battleSel) {
+    const fromEl = boardEl.querySelector('[data-square="' + battleSel.from + '"]');
+    if (fromEl) fromEl.classList.add("selected");
+    Object.keys(battleSel.dests || {}).forEach((to) => {
+      const el = boardEl.querySelector('[data-square="' + to + '"]');
+      if (el) el.classList.add(battleSel.dests[to] === "capture" ? "dest-capture" : "dest");
+    });
+  }
+  if (dialogEl) dialogEl.innerHTML = selectedMovesHTML();
 }
 
 function findWarlordSquare(board, color) {
@@ -431,26 +563,28 @@ function wireBattleBoard(m) {
       await doBattleMove(battleSel.from, sq, battleSel.dests[sq]);
       return;
     }
-    // Click own piece -> select it and fetch its legal destinations.
+    // Click own piece -> select it and show its legal moves (cached: the
+    // first selection in a position fetches, later ones do not).
     if (cell && cell.color === "w") {
-      if (battleSel && battleSel.from === sq) { battleSel = null; renderBattle(); return; }
+      if (battleSel && battleSel.from === sq) { battleSel = null; updateSelectionUI(); return; }
       try {
-        const res = await api("/api/match/moves");
+        const allMoves = await getMoves();
+        const moves = allMoves.filter((mv) => mv.from === sq);
         const dests = {};
-        (res.moves || []).filter((mv) => mv.from === sq).forEach((mv) => {
+        moves.forEach((mv) => {
           const target = cellAt(m.board, mv.to);
           // En passant lands on an empty square, so the board alone cannot
           // tell it from a quiet move — the SAN carries the capture ("x").
           dests[mv.to] = (target || (mv.san && mv.san.indexOf("x") !== -1)) ? "capture" : "move";
         });
-        battleSel = { from: sq, dests: dests };
+        battleSel = { from: sq, dests: dests, moves: moves };
         if (!Object.keys(dests).length) toast("That hero has no legal moves right now.", true);
-        renderBattle();
+        updateSelectionUI();
       } catch (e) { showError(e); }
       return;
     }
     // Click elsewhere -> clear selection.
-    if (battleSel) { battleSel = null; renderBattle(); }
+    if (battleSel) { battleSel = null; updateSelectionUI(); }
   });
 }
 
@@ -463,10 +597,10 @@ function cellAt(board, sq) {
 async function doBattleMove(from, to, kind) {
   battleBusy = true;
   try {
-    // Promotion? Ask the server's move list: any move from->to with a
-    // promotion means the player must choose the role first.
-    const res = await api("/api/match/moves");
-    const options = (res.moves || []).filter((mv) => mv.from === from && mv.to === to);
+    // Promotion? Ask the move list (cached for this position): any move
+    // from->to with a promotion means the player must choose the role first.
+    const allMoves = await getMoves();
+    const options = allMoves.filter((mv) => mv.from === from && mv.to === to);
     let promotion = null;
     if (options.some((mv) => mv.promotion)) {
       promotion = await pickPromotion();
@@ -729,8 +863,11 @@ function filterBtn(kind, value, label) {
    (rarity gradient + large role icon + initial) when it does not. */
 function portraitHTML(hero, big) {
   const cls = "portrait rarity-" + hero.rarity + (big ? " detail-portrait" : "");
-  if (hero.portrait) {
-    return '<div class="' + cls + '" aria-hidden="true"><img src="' + esc(hero.portrait) + '" alt="" loading="lazy"></div>';
+  /* Card grids use the small thumbnail (~40KB); only the detail modal loads
+     the full portrait (~500KB). 72 full portraits is ~47MB of page weight. */
+  const src = (!big && hero.portraitThumb) ? hero.portraitThumb : hero.portrait;
+  if (src) {
+    return '<div class="' + cls + '" aria-hidden="true"><img src="' + esc(src) + '" alt="" loading="lazy"></div>';
   }
   const initial = (hero.name || "?").trim().charAt(0);
   return '<div class="' + cls + '" aria-hidden="true">' +
@@ -1091,10 +1228,8 @@ $$(".tab-btn").forEach((b) => b.addEventListener("click", () => switchTab(b.data
     $$(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-shop"));
   }
   try {
-    S = await api("/api/state");
+    await refreshState();
     try { shopConfig = await api("/api/shop/config"); } catch (e) { /* status already in /api/state */ }
-    renderHeader();
-    renderTab(currentTab);
     if (pendingOrder && currentTab === "shop") {
       toast("You have a pending PayPal payment — approve it in the PayPal tab, then press verify.");
     }

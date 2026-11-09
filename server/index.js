@@ -56,7 +56,11 @@ function asJson(v) {
 }
 
 function publicHero(h) {
-  return { id: h.id, name: h.name, role: h.role, rarity: h.rarity, power: h.power, ability: h.ability, flavor: h.flavor, portrait: h.portrait || null };
+  // portraitThumb: a small (400px) version of the portrait for card grids —
+  // the full portrait is ~500KB and 72 of them would be ~47MB; the thumb is
+  // ~40KB. The detail modal still uses the full portrait.
+  const thumb = h.portrait ? h.portrait.replace(/\.webp$/i, "-thumb.webp") : null;
+  return { id: h.id, name: h.name, role: h.role, rarity: h.rarity, power: h.power, ability: h.ability, flavor: h.flavor, portrait: h.portrait || null, portraitThumb: thumb };
 }
 
 // --- Match (engine state <-> DB row) ---
@@ -115,7 +119,11 @@ function teamScore(equipped, collection) {
   return score;
 }
 
-async function buildStateResponse(pool, player) {
+/* full=false omits the static catalog/difficulties/packs (~30KB) — the
+   client caches those after the first full load and merges them back.
+   Lessons stay (their `unlocked` flags depend on the live team score). */
+async function buildStateResponse(pool, player, opts) {
+  const full = !opts || opts.full !== false;
   const collection = await db.getCollection(pool, player.id);
   const equipped = asJson(player.equipped) || { ...STARTERS };
   const activeRow = await db.getActiveMatch(pool, player.id);
@@ -124,14 +132,13 @@ async function buildStateResponse(pool, player) {
   const today = new Date().toISOString().slice(0, 10);
   const claimedToday = player.last_stipend_date &&
     new Date(player.last_stipend_date).toISOString().slice(0, 10) === today;
-  return {
+  const out = {
     gold: player.gold,
     wins: player.wins,
     losses: player.losses,
     draws: player.draws,
     gamesPlayed: player.games_played,
     record: `${player.wins}-${player.losses}-${player.draws}`,
-    catalog: HEROES.map(publicHero),
     collection: collection.map((c) => ({
       characterId: c.characterId,
       copies: c.copies,
@@ -139,17 +146,21 @@ async function buildStateResponse(pool, player) {
       equippedSlot: Object.entries(equipped).find(([, id]) => id === c.characterId)?.[0] || null,
     })),
     equipped,
-    difficulties: DIFFICULTIES,
     shop: {
       configured: !!cfg,
       env: cfg ? cfg.env : null,
-      packs: PACKS,
     },
     stipend: { amount: 20, threshold: 20, canClaim: player.gold < 20 && !claimedToday, claimedToday: !!claimedToday },
     lessons: LESSONS.map((l) => ({ id: l.id, title: l.title, minScore: l.minScore, unlocked: score >= l.minScore, text: l.text })),
     teamScore: score,
     activeMatch: serializeMatch(activeRow),
   };
+  if (full) {
+    out.catalog = HEROES.map(publicHero);
+    out.difficulties = DIFFICULTIES;
+    out.shop.packs = PACKS;
+  }
+  return out;
 }
 
 function createApp(pool) {
@@ -189,9 +200,12 @@ function createApp(pool) {
 
   app.get("/healthz", (req, res) => res.json({ ok: true }));
 
+  // ?full=0 skips the static catalog/difficulties/packs (the client caches
+  // them after the first full load) so repeated refreshes stay small.
   app.get("/api/state", async (req, res, next) => {
     try {
-      res.json(await buildStateResponse(pool, req.player));
+      const full = req.query.full !== "0";
+      res.json(await buildStateResponse(pool, req.player, { full }));
     } catch (e) { next(e); }
   });
 

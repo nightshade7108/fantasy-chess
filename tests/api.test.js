@@ -98,6 +98,29 @@ test("state: fresh profile has 100 gold, 6 starters, full catalog", async () => 
   assert.equal(body.lessons[3].unlocked, false);
 });
 
+test("state: ?full=0 omits the static catalog/difficulties/packs but keeps live fields", async () => {
+  const { status, body } = await get("/api/state?full=0");
+  assert.equal(status, 200);
+  assert.equal(body.catalog, undefined);
+  assert.equal(body.difficulties, undefined);
+  assert.equal(body.shop.packs, undefined);
+  assert.equal(body.gold, 100);
+  assert.equal(body.shop.configured, false);
+  assert.equal(body.lessons.length, 6);
+  assert.equal(body.lessons[0].unlocked, true);
+  assert.equal(body.collection.length, 6);
+});
+
+test("state: catalog heroes carry a portraitThumb alongside the portrait", async () => {
+  const { body } = await get("/api/state");
+  const withPortrait = body.catalog.filter((h) => h.portrait);
+  assert.ok(withPortrait.length > 0);
+  for (const h of withPortrait) {
+    assert.ok(h.portraitThumb, `${h.id} should have a portraitThumb`);
+    assert.equal(h.portraitThumb, h.portrait.replace(/\.webp$/i, "-thumb.webp"));
+  }
+});
+
 test("match: start charges entry, illegal move rejected, legal move gets AI reply", async () => {
   const started = await post("/api/match/start", { difficultyId: "squire" });
   assert.equal(started.status, 200);

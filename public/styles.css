@@ -208,9 +208,16 @@ main { max-width: 1080px; margin: 0 auto; padding: 1.4rem 1.25rem; }
 .match-wrap { display: flex; flex-wrap: wrap; gap: 1.2rem; align-items: flex-start; }
 .board-col { flex: 1 1 380px; min-width: 300px; }
 .side-col { flex: 1 1 260px; min-width: 240px; }
+/* Warbands and captured pieces live below the board (full width); the side
+   column beside the board holds the move history and the abandon button.
+   On narrow screens everything stacks: board, history, then warbands. */
+.below-board { margin-top: 1.2rem; }
+.below-board h3 { margin-top: .9rem; }
+.below-board h3:first-child { margin-top: 0; }
 .board {
   display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
   width: 100%; max-width: 560px; aspect-ratio: 1 / 1; box-sizing: border-box;
+  position: relative; /* anchor for the animated AI-move clone */
   border: 6px solid transparent;
   background:
     linear-gradient(#fff, #fff) padding-box,
@@ -235,7 +242,7 @@ main { max-width: 1080px; margin: 0 auto; padding: 1.4rem 1.25rem; }
 }
 .sq.dest-capture::after {
   content: ""; position: absolute; inset: 6%; border-radius: 50%;
-  border: 4px solid var(--pink-deep); box-shadow: 0 0 12px rgba(219, 39, 119, .55), inset 0 0 12px rgba(219, 39, 119, .35);
+  border: 4px solid #b96a72; box-shadow: 0 0 12px rgba(185, 106, 114, .6), inset 0 0 12px rgba(185, 106, 114, .4);
   pointer-events: none;
 }
 .sq .coord {
@@ -250,9 +257,11 @@ main { max-width: 1080px; margin: 0 auto; padding: 1.4rem 1.25rem; }
 @keyframes pulseCheck { from { box-shadow: inset 0 0 0 3px rgba(220,38,38,.4); } to { box-shadow: inset 0 0 0 6px rgba(220,38,38,.8); } }
 
 /* Die-cut piece tokens: the token IS the role symbol (shield / bow / wand /
-   sword / crescent moon / crown), filled with the side colour — pink for the
-   player, violet for the enemy — outlined in the hero's rarity colour, with
-   a gold rim + glow on warlords. The gradients live in index.html. */
+   sword / crescent moon / crown), filled with the side colour — warm ivory
+   for the player, muted slate for the enemy — outlined in the hero's
+   rarity colour, with a gold rim + glow on warlords. The gradients live in
+   index.html. Minimalist sides: restrained, sophisticated, muted — two clear
+   colours that stay readable on every arena, light or dark. */
 .chip {
   width: 88%; height: 88%; aspect-ratio: 1; flex: none;
   display: flex; align-items: center; justify-content: center;
@@ -264,9 +273,11 @@ main { max-width: 1080px; margin: 0 auto; padding: 1.4rem 1.25rem; }
   filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)) drop-shadow(0 0 5px color-mix(in srgb, var(--rarity-color, #9aa3ad) 55%, transparent));
 }
 .chip svg .sil { stroke: var(--rarity-color, #9aa3ad); stroke-width: 1; stroke-linejoin: round; stroke-linecap: round; }
-.chip.w svg .sil { fill: url(#grad-chip-pink); }
-.chip.b svg .sil { fill: url(#grad-chip-violet); }
-.chip svg .det { fill: rgba(255,255,255,.34); stroke: none; }
+.chip.w svg .sil { fill: url(#grad-chip-ivory); }
+.chip.b svg .sil { fill: url(#grad-chip-slate); }
+.chip svg .det { stroke: none; }
+.chip.w svg .det { fill: rgba(122, 102, 62, .32); } /* warm taupe on ivory */
+.chip.b svg .det { fill: rgba(255, 255, 255, .35); } /* soft white on slate */
 .chip.warlord svg .sil { stroke: var(--gold); stroke-width: 1.5; }
 .chip.warlord svg { filter: drop-shadow(0 2px 3px rgba(0,0,0,.4)) drop-shadow(0 0 11px rgba(242,183,5,.9)); }
 .chip.mini { width: 34px; height: 34px; flex: none; }
@@ -274,6 +285,24 @@ main { max-width: 1080px; margin: 0 auto; padding: 1.4rem 1.25rem; }
 /* Dark arenas get a thicker rarity outline so the cutouts stay readable. */
 .board.arena-dragon .chip svg .sil,
 .board.arena-celestial .chip svg .sil { stroke-width: 1.4; }
+
+/* ---------- opponent-move animation ----------
+   The AI's reply is shown in two beats: the player's move lands, a short
+   pause, then the enemy chip slides (or blinks, for teleports) to its
+   square. The travelling chip is a clone positioned over the board; the
+   from/to squares stay highlighted until the player's next move. */
+.anim-clone {
+  position: absolute; display: flex; align-items: center; justify-content: center;
+  z-index: 6; pointer-events: none;
+  transition: transform .45s cubic-bezier(.3, .7, .3, 1), opacity .18s ease;
+}
+.anim-clone.teleport-out { opacity: 0; }
+.chip.chip-gone { opacity: 0; }
+.chip.chip-fading { opacity: 0; transition: opacity .35s ease; }
+.sq.ai-from { box-shadow: inset 0 0 0 3px rgba(71, 85, 110, .65), inset 0 0 14px rgba(71, 85, 110, .3); }
+.sq.ai-to { box-shadow: inset 0 0 0 3px var(--gold), inset 0 0 18px rgba(242, 183, 5, .8); }
+.chip.promo-pop { animation: promoPop .5s ease; }
+@keyframes promoPop { 0% { transform: scale(1.4); } 100% { transform: scale(1); } }
 
 /* ---------- arenas: one distinct battlefield per difficulty ----------
    The base board above IS the Squire's Trial meadow. Each arena below

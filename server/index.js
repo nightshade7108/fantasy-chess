@@ -251,6 +251,10 @@ function createApp(pool) {
       candidates.sort((a, b) => (b.enPassant - a.enPassant) || ((b.castle ? 1 : 0) - (a.castle ? 1 : 0)) || ((b.captured ? 1 : 0) - (a.captured ? 1 : 0)));
       const move = candidates[0];
       let next = engine.applyMove(state, move);
+      // Board after the player's move only (before the AI replies) — the
+      // client renders this first so the player's move lands instantly,
+      // then animates the AI's reply on top of it.
+      const boardAfterPlayer = engine.serializeBoard(next);
       const history = [...(asJson(row.history) || []), { from, to, san: move.san }];
       let aiMove = null;
       let settlement = null;
@@ -259,7 +263,13 @@ function createApp(pool) {
       if (statusAfterPlayer === "active") {
         const ai = chooseMove(next, row.difficulty);
         if (ai) {
-          aiMove = { from: engine.toAlgebraic(ai.from), to: engine.toAlgebraic(ai.to), san: ai.san };
+          // Move flags are presentation data for the client animation
+          // (teleport vs slide, castling rook, en passant, promotion).
+          aiMove = {
+            from: engine.toAlgebraic(ai.from), to: engine.toAlgebraic(ai.to), san: ai.san,
+            castle: ai.castle || null, enPassant: !!ai.enPassant,
+            promotion: ai.promotion || null, teleport: !!ai.teleport,
+          };
           next = engine.applyMove(next, ai);
           history.push({ from: aiMove.from, to: aiMove.to, san: ai.san });
         }
@@ -282,6 +292,7 @@ function createApp(pool) {
         match: finished ? null : serializeMatch(fresh),
         gameOver: finished,
         aiMove,
+        boardAfterPlayer,
         settlement,
       });
     } catch (e) { next(e); }

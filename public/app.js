@@ -32,14 +32,16 @@ const icon = (role) => ICONS[role] || ICONS.soldier;
 /* Filled role silhouettes for the die-cut piece tokens: the token IS the
    symbol shape (shield / bow / wand / sword / crescent moon / crown),
    filled with the side colour and outlined in the hero's rarity colour.
-   `.sil` is the main shape, `.det` a lighter inner detail. */
+   `.sil` is the main shape, `.det` a lighter inner detail. The shapes are
+   drawn for a refined, crafted look: smooth curves, balanced proportions,
+   a clear silhouette at small sizes. */
 const SILHOUETTES = {
-  soldier: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M12 1.8 L19.2 4.8 V11 C19.2 16.2 15.6 20.6 12 22.2 C8.4 20.6 4.8 16.2 4.8 11 V4.8 Z"/><path class="det" d="M12 6.6 L15.1 9 V12.3 L12 14.5 L8.9 12.3 V9 Z"/></svg>',
-  archer: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M8 1 C15 4.5 15 19.5 8 23 C10.2 19.5 10.2 4.5 8 1 Z"/><path class="sil" d="M7.5 11.3 L19.5 11.3 L19.5 12.7 L7.5 12.7 Z"/><path class="sil" d="M19 9.4 L23 12 L19 14.6 Z"/><path class="sil" d="M7.5 9.6 L10.2 12 L7.5 14.4 Z"/></svg>',
-  wizard: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M4.6 21.6 L14.6 5.4 L17.1 7.4 L7.1 22.6 Z"/><path class="sil" d="M17.6 1.4 L18.4 4.1 L21.1 4.9 L18.4 5.7 L17.6 8.4 L16.8 5.7 L14.1 4.9 L16.8 4.1 Z"/><path class="sil" d="M20.2 9.4 L20.7 10.8 L22.1 11.3 L20.7 11.8 L20.2 13.2 L19.7 11.8 L18.3 11.3 L19.7 10.8 Z"/></svg>',
-  knight: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M12 1 L14.3 3.3 L13.5 12.5 L10.5 12.5 L9.7 3.3 Z M5.5 13.5 L18.5 13.5 L18.5 16 L5.5 16 Z M10.8 16.8 L13.2 16.8 L13.2 20.4 L10.8 20.4 Z M12 20.6 m-1.7 0 a1.7 1.7 0 1 0 3.4 0 a1.7 1.7 0 1 0 -3.4 0"/></svg>',
-  witch: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M20.8 13.8 A8.8 8.8 0 1 1 10.2 3.6 A7.2 7.2 0 0 0 20.8 13.8 Z"/><path class="sil" d="M17 3.4 L17.5 5.2 L19.3 5.7 L17.5 6.2 L17 8 L16.5 6.2 L14.7 5.7 L16.5 5.2 Z"/></svg>',
-  warlord: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M3 17.5 L2 6.5 L7.5 10.5 L12 3.5 L16.5 10.5 L22 6.5 L21 17.5 Z M4 19 L20 19 L20 21.6 L4 21.6 Z"/><path class="det" d="M12 11.2 m-1.6 0 a1.6 1.6 0 1 0 3.2 0 a1.6 1.6 0 1 0 -3.2 0"/></svg>',
+  soldier: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M12 1.6 C14.2 2.4 16.8 3.2 19.4 4.2 V10.8 C19.4 15.9 15.9 20 12 22 C8.1 20 4.6 15.9 4.6 10.8 V4.2 C7.2 3.2 9.8 2.4 12 1.6 Z"/><path class="det" d="M12 6 C13.5 6.6 15 7.2 16.2 7.8 V10.8 C16.2 13.9 14.4 16.4 12 17.8 C9.6 16.4 7.8 13.9 7.8 10.8 V7.8 C9 7.2 10.5 6.6 12 6 Z"/></svg>',
+  archer: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M10 1 C4.5 4.5 3.2 8 3.2 12 C3.2 16 4.5 19.5 10 23 C7.8 19 7.2 15.5 7.2 12 C7.2 8.5 7.8 5 10 1 Z"/><path class="sil" d="M9.7 1 L10.3 1 L10.3 23 L9.7 23 Z"/><path class="sil" d="M9.5 11.3 L20 11.3 L20 12.7 L9.5 12.7 Z"/><path class="sil" d="M19.4 9.3 L23.6 12 L19.4 14.7 Z"/><path class="sil" d="M7.5 9.7 L10.5 12 L7.5 14.3 Z"/></svg>',
+  wizard: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M4.7 21.5 L15.6 4.8 L16.4 5.2 L6.3 22.5 Z"/><path class="sil" d="M17.8 1 L18.4 3 L20.4 3.6 L18.4 4.2 L17.8 6.2 L17.2 4.2 L15.2 3.6 L17.2 3 Z"/><path class="sil" d="M21 8.4 L21.4 9.7 L22.7 10.1 L21.4 10.5 L21 11.8 L20.6 10.5 L19.3 10.1 L20.6 9.7 Z"/><path class="sil" d="M8.5 13.8 L8.8 14.9 L9.9 15.2 L8.8 15.5 L8.5 16.6 L8.2 15.5 L7.1 15.2 L8.2 14.9 Z"/></svg>',
+  knight: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M12 0.8 L13.5 3.4 L13.1 12.4 L10.9 12.4 L10.5 3.4 Z"/><path class="det" d="M11.6 3.8 L12.4 3.8 L12.3 11.6 L11.7 11.6 Z"/><path class="sil" d="M4.8 13.2 L19.2 13.2 L19.2 15.2 L4.8 15.2 Z"/><path class="sil" d="M10.9 15.4 L13.1 15.4 L13.1 19.8 L10.9 19.8 Z"/><path class="sil" d="M12 20 m-1.9 0 a1.9 1.9 0 1 0 3.8 0 a1.9 1.9 0 1 0 -3.8 0"/></svg>',
+  witch: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M20.6 14.2 A8.6 8.6 0 1 1 10.4 3.8 A7.4 7.4 0 0 0 20.6 14.2 Z"/><path class="sil" d="M17.6 2.6 L18.1 4.5 L20 5 L18.1 5.5 L17.6 7.4 L17.1 5.5 L15.2 5 L17.1 4.5 Z"/><path class="sil" d="M7.5 17.5 L7.8 18.5 L8.8 18.8 L7.8 19.1 L7.5 20.1 L7.2 19.1 L6.2 18.8 L7.2 18.5 Z"/></svg>',
+  warlord: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M3.4 17.6 L2.4 6.6 L7.8 10.6 L12 3 L16.2 10.6 L21.6 6.6 L20.6 17.6 Z"/><path class="sil" d="M2.4 5.2 m-1.2 0 a1.2 1.2 0 1 0 2.4 0 a1.2 1.2 0 1 0 -2.4 0"/><path class="sil" d="M12 1.6 m-1.2 0 a1.2 1.2 0 1 0 2.4 0 a1.2 1.2 0 1 0 -2.4 0"/><path class="sil" d="M21.6 5.2 m-1.2 0 a1.2 1.2 0 1 0 2.4 0 a1.2 1.2 0 1 0 -2.4 0"/><path class="sil" d="M3.8 19 L20.2 19 L20.2 21.6 L3.8 21.6 Z"/><path class="det" d="M12 19.4 L13.3 20.3 L12 21.2 L10.7 20.3 Z"/></svg>',
 };
 const silhouette = (role) => SILHOUETTES[role] || SILHOUETTES.soldier;
 
@@ -50,6 +52,11 @@ let battleSel = null;       // { from, dests: Map(to -> move) }
 let battleBusy = false;
 let lastSettlement = null;  // settlement object from the final move response
 let lastResultDiff = null;  // difficulty id of the finished match
+let lastAiMove = null;      // { from, to } of the most recent AI reply —
+// highlighted on the board until the player makes their next move.
+const AI_THINK_MS = 750;    // beat after the player's move lands, before the enemy acts
+const AI_SLIDE_MS = 450;    // how long the enemy chip takes to slide to its square
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let galleryRole = "all";
 let galleryRarity = "all";
 let gallerySelected = null; // hero id for the detail modal
@@ -127,6 +134,7 @@ function boardHTML(board, opts) {
   const selFrom = opts.selectedFrom || null;
   const dests = opts.dests || {}; // to-square -> "move" | "capture"
   const checkSq = opts.checkSquare || null;
+  const aiMove = opts.aiMove || null; // last AI reply: highlight its from/to squares
   const theme = opts.theme || "arena-squire"; // per-difficulty arena
   let html = '<div class="board ' + theme + '" role="grid" aria-label="Chess board">';
   for (let r = 7; r >= 0; r--) {
@@ -139,6 +147,8 @@ function boardHTML(board, opts) {
       if (dests[sq] === "move") cls.push("dest");
       if (dests[sq] === "capture") cls.push("dest-capture");
       if (checkSq === sq) cls.push("in-check");
+      if (aiMove && aiMove.from === sq) cls.push("ai-from");
+      if (aiMove && aiMove.to === sq) cls.push("ai-to");
       let inner = "";
       if (f === 0) inner += '<span class="coord rank">' + (r + 1) + "</span>";
       if (r === 0) inner += '<span class="coord file">' + FILES[f] + "</span>";
@@ -154,7 +164,7 @@ function heroById(id) {
 }
 
 /* Die-cut piece token: the token IS the role symbol, filled with the side
-   colour (pink = player, violet = enemy), outlined in rarity colour,
+   colour (warm ivory = player, muted slate = enemy), outlined in rarity colour,
    gold rim on warlords. */
 function chipHTML(cell) {
   const hero = heroById(cell.hero);
@@ -301,25 +311,27 @@ function matchHTML(m, diff) {
   const arena = "arena-" + (diff ? diff.id : "squire");
   const turnText = m.status !== "active"
     ? "Battle over"
-    : m.turn === "w" ? "Your move — tap one of your pink heroes" : "The enemy is thinking…";
+    : m.turn === "w" ? "Your move — tap one of your ivory heroes" : "The enemy is thinking…";
   return '<div class="panel ' + arena + '"><h2>' + esc(diff ? diff.name : "Battle") +
     ' <span class="small muted">vs ' + esc(diff ? diff.opponent : "") + "</span></h2>" +
     '<p class="turn-line">' + esc(turnText) + " " +
     (m.check && m.status === "active" ? '<span class="check-flag">CHECK!</span>' : "") + "</p>" +
     '<div class="match-wrap"><div class="board-col">' +
-    boardHTML(m.board, { playable: m.status === "active" && m.turn === "w", selectedFrom: battleSel ? battleSel.from : null, dests: battleSel ? battleSel.dests : {}, checkSquare: checkSq, theme: arena }) +
-    '<p class="small muted" style="text-align:center">You are White (pink), at the bottom. The enemy is violet, at the top.</p>' +
+    boardHTML(m.board, { playable: m.status === "active" && m.turn === "w", selectedFrom: battleSel ? battleSel.from : null, dests: battleSel ? battleSel.dests : {}, checkSquare: checkSq, theme: arena, aiMove: lastAiMove }) +
+    '<p class="small muted" style="text-align:center">You are White (ivory), at the bottom. The enemy is slate, at the top.</p>' +
     "</div>" +
     '<div class="side-col">' +
+    "<h3>Move history</h3>" +
+    '<div class="history-box">' + historyHTML(m.history) + "</div>" +
+    '<p style="margin-top:1rem"><button class="btn btn-danger" id="abandon-match">Abandon battle (no refund)</button></p>' +
+    "</div></div>" +
+    '<div class="below-board">' +
     "<h3>Your warband</h3>" + fieldStripHTML(S.equipped, "w") +
     "<h3>Enemy warband</h3>" + fieldStripHTML(enemyHeroes, "b") +
     "<h3>Captured</h3>" +
     capturedRowHTML("You captured", caps.b, "b") +
     capturedRowHTML("Enemy captured", caps.w, "w") +
-    "<h3>Move history</h3>" +
-    '<div class="history-box">' + historyHTML(m.history) + "</div>" +
-    '<p style="margin-top:1rem"><button class="btn btn-danger" id="abandon-match">Abandon battle (no refund)</button></p>' +
-    "</div></div></div>";
+    "</div></div>";
 }
 
 function findWarlordSquare(board, color) {
@@ -359,7 +371,7 @@ async function startMatch(diffId) {
   if (battleBusy) return;
   battleBusy = true;
   try {
-    lastSettlement = null; lastResultDiff = null; battleSel = null;
+    lastSettlement = null; lastResultDiff = null; battleSel = null; lastAiMove = null;
     await api("/api/match/start", { method: "POST", body: JSON.stringify({ difficultyId: diffId }) });
     await refreshState();
     toast("Battle started — good luck!");
@@ -370,7 +382,7 @@ async function abandonMatch() {
   if (!confirm("Abandon this battle? You lose your entry fee and get no rewards.")) return;
   try {
     await api("/api/match/abandon", { method: "POST", body: JSON.stringify({}) });
-    battleSel = null;
+    battleSel = null; lastAiMove = null;
     await refreshState();
     toast("Battle abandoned.");
   } catch (e) { showError(e); }
@@ -440,22 +452,168 @@ async function doBattleMove(from, to, kind) {
     } else {
       battleSel = null;
     }
+    // A new player move clears the previous AI-move highlight.
+    lastAiMove = null;
     const out = await api("/api/match/move", {
       method: "POST",
       body: JSON.stringify({ from: from, to: to, promotion: promotion }),
     });
+    // No AI reply (the player's own move ended the game): show the final
+    // position at once.
+    if (!out.aiMove) {
+      if (out.gameOver && out.settlement) {
+        lastSettlement = out.settlement;
+        lastResultDiff = S.activeMatch ? S.activeMatch.difficultyId : lastResultDiff;
+        toast(out.settlement.result === "win" ? "Victory! +" + out.settlement.goldAwarded + " gold" :
+          out.settlement.result === "draw" ? "Draw — +" + out.settlement.goldAwarded + " gold" : "Defeat. Better luck next time.");
+      }
+      await refreshState();
+      return;
+    }
+    // 1. Render the board with ONLY the player's move applied, so it lands
+    //    instantly and the player sees what they just did.
+    const prevMatch = S.activeMatch;
+    if (out.boardAfterPlayer && prevMatch) {
+      const hist = out.match ? out.match.history.slice(0, -1)
+        : [...(prevMatch.history || []), { from: from, to: to }];
+      S.activeMatch = {
+        ...prevMatch,
+        board: out.boardAfterPlayer, turn: "b", status: "active",
+        history: hist, check: false,
+      };
+      renderBattle();
+    }
+    // 2. A beat while "the enemy is thinking", then slide its chip.
+    await sleep(AI_THINK_MS);
+    await animateAiMove(out.aiMove, out.boardAfterPlayer);
+    // 3. Show the final position (and the result screen if the game ended).
+    lastAiMove = { from: out.aiMove.from, to: out.aiMove.to };
     if (out.gameOver && out.settlement) {
       lastSettlement = out.settlement;
-      lastResultDiff = S.activeMatch ? S.activeMatch.difficultyId : lastResultDiff;
+      lastResultDiff = prevMatch ? prevMatch.difficultyId : lastResultDiff;
       toast(out.settlement.result === "win" ? "Victory! +" + out.settlement.goldAwarded + " gold" :
         out.settlement.result === "draw" ? "Draw — +" + out.settlement.goldAwarded + " gold" : "Defeat. Better luck next time.");
     }
     await refreshState();
+    // An enemy promotion pops as it lands.
+    if (out.aiMove.promotion) {
+      const sq = document.querySelector('#tab-battle .board [data-square="' + out.aiMove.to + '"] .chip');
+      if (sq) sq.classList.add("promo-pop");
+    }
   } catch (e) {
     showError(e);
-    battleSel = null;
-    renderBattle();
+    battleSel = null; lastAiMove = null;
+    // Re-sync from the server: the synthetic mid-move board above must not linger.
+    try { await refreshState(); } catch (e2) { renderBattle(); }
   } finally { battleBusy = false; }
+}
+
+/* Animate the AI's reply on the board that currently shows the position
+   after the player's move only (boardBefore). The moving chip is cloned
+   and slid from its origin square to its destination; captures fade out,
+   castling slides the rook too, teleports blink, and the from/to squares
+   stay highlighted. Pure presentation — the position itself is unchanged
+   until the caller re-renders the final board. Returns true if the
+   animation ran, false if anything was missing (caller just renders). */
+async function animateAiMove(aiMove, boardBefore) {
+  const boardEl = $("#tab-battle .board");
+  if (!boardEl || !boardBefore || !aiMove) return false;
+  const fromCell = cellAt(boardBefore, aiMove.from);
+  if (!fromCell) return false;
+  const fromSq = boardEl.querySelector('[data-square="' + aiMove.from + '"]');
+  const toSq = boardEl.querySelector('[data-square="' + aiMove.to + '"]');
+  if (!fromSq || !toSq) return false;
+  const size = boardEl.clientWidth / 8;
+  if (!size) return false;
+  const pos = (sq) => {
+    const f = FILES.indexOf(sq[0]);
+    const r = parseInt(sq.slice(1), 10) - 1;
+    return { x: f * size, y: (7 - r) * size };
+  };
+  const rarityOf = (cell) => {
+    const hero = cell && cell.hero ? heroById(cell.hero) : null;
+    return hero ? hero.rarity : "common";
+  };
+  // Highlight the squares so the eye finds the move even after the slide.
+  fromSq.classList.add("ai-from");
+  toSq.classList.add("ai-to");
+  const toCell = cellAt(boardBefore, aiMove.to);
+  // The piece being captured, if any: on the destination square, or the
+  // en-passant pawn (origin rank, destination file).
+  let capturedSqEl = null;
+  if (toCell && toCell.color === "w") {
+    capturedSqEl = toSq;
+  } else if (fromCell.role === "soldier" && !toCell &&
+      Math.abs(FILES.indexOf(aiMove.to[0]) - FILES.indexOf(aiMove.from[0])) === 1) {
+    capturedSqEl = boardEl.querySelector('[data-square="' + aiMove.to[0] + aiMove.from[1] + '"]');
+  }
+  // Castling: the king slides two files and the rook hops over it.
+  let rook = null;
+  if (aiMove.castle) {
+    const rank = aiMove.from[1];
+    const kingside = aiMove.castle === "K";
+    const rookFrom = (kingside ? "h" : "a") + rank;
+    rook = { from: rookFrom, to: (kingside ? "f" : "d") + rank, cell: cellAt(boardBefore, rookFrom) };
+  }
+  // Hide the real chips at the origins; the clones will travel instead.
+  const fromChip = fromSq.querySelector(".chip");
+  if (fromChip) fromChip.classList.add("chip-gone");
+  let rookChip = null;
+  if (rook && rook.cell) {
+    const rookSq = boardEl.querySelector('[data-square="' + rook.from + '"]');
+    rookChip = rookSq ? rookSq.querySelector(".chip") : null;
+    if (rookChip) rookChip.classList.add("chip-gone");
+  }
+  const makeClone = (cell, sq) => {
+    const p = pos(sq);
+    const wrap = document.createElement("span");
+    wrap.className = "anim-clone";
+    wrap.style.left = p.x + "px";
+    wrap.style.top = p.y + "px";
+    wrap.style.width = size + "px";
+    wrap.style.height = size + "px";
+    const chip = document.createElement("span");
+    chip.className = "chip " + cell.color + (cell.role === "warlord" ? " warlord" : "");
+    chip.style.setProperty("--rarity-color", "var(--rarity-" + rarityOf(cell) + ")");
+    chip.innerHTML = silhouette(cell.role);
+    wrap.appendChild(chip);
+    boardEl.appendChild(wrap);
+    return wrap;
+  };
+  const clone = makeClone(fromCell, aiMove.from);
+  const rookClone = (rook && rook.cell) ? makeClone(rook.cell, rook.from) : null;
+  if (capturedSqEl) {
+    const capChip = capturedSqEl.querySelector(".chip");
+    if (capChip) capChip.classList.add("chip-fading");
+  }
+  // Let the browser lay the clones out at their origins, then move them.
+  void clone.offsetWidth;
+  if (aiMove.teleport) {
+    // Teleports don't slide: the piece blinks out here and back in there.
+    clone.classList.add("teleport-out");
+    await sleep(180);
+    const p = pos(aiMove.to);
+    clone.style.transition = "none";
+    clone.style.left = p.x + "px";
+    clone.style.top = p.y + "px";
+    void clone.offsetWidth;
+    clone.style.transition = "";
+    clone.classList.remove("teleport-out");
+    await sleep(240);
+  } else {
+    const fromP = pos(aiMove.from);
+    const toP = pos(aiMove.to);
+    clone.style.transform = "translate(" + (toP.x - fromP.x) + "px," + (toP.y - fromP.y) + "px)";
+    if (rookClone) {
+      const rFrom = pos(rook.from);
+      const rTo = pos(rook.to);
+      rookClone.style.transform = "translate(" + (rTo.x - rFrom.x) + "px," + (rTo.y - rFrom.y) + "px)";
+    }
+    await sleep(AI_SLIDE_MS);
+  }
+  clone.remove();
+  if (rookClone) rookClone.remove();
+  return true;
 }
 
 /* ---------------- Gallery tab ---------------- */
@@ -763,7 +921,7 @@ function renderTrainingSession(el) {
   }
   html += '<div class="match-wrap"><div class="board-col">' +
     boardHTML(t.board, { playable: !t.done, selectedFrom: trainingSel ? trainingSel.from : null }) +
-    '<p class="small muted" style="text-align:center">Tap one of your pink heroes, then tap where it should go.</p>' +
+    '<p class="small muted" style="text-align:center">Tap one of your ivory heroes, then tap where it should go.</p>' +
     "</div><div class='side-col'>" +
     (t.done
       ? '<div class="banner"><p><strong>Lesson complete!</strong> Well played — Coach Pell is proud.</p></div><p><button class="btn btn-gold" id="training-done">Back to lessons</button></p>'
@@ -862,7 +1020,7 @@ function renderGuide() {
     if (!confirm("Reset ALL progress? Gold, record, collection and matches will be wiped and you will start over with 100 gold and the 6 starter heroes.")) return;
     try {
       await api("/api/profile/reset", { method: "POST", body: JSON.stringify({}) });
-      lastSettlement = null; lastResultDiff = null; training = null; trainingSel = null; battleSel = null;
+      lastSettlement = null; lastResultDiff = null; training = null; trainingSel = null; battleSel = null; lastAiMove = null;
       pendingOrder = null; localStorage.removeItem("fc_pending_order");
       await refreshState();
       toast("Progress reset — fresh start!");

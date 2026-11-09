@@ -32,8 +32,9 @@ Returns everything the UI needs in one call:
 ```
 
 ### `POST /api/match/start` `{ "difficultyId": "squire" }`
-Charges the entry fee (fails 400 if gold is insufficient or a match is
-already active) and returns `{ "match": <activeMatch> }`. Player is White.
+Charges the entry fee (fails 400 if gold is insufficient; fails 409
+`match_active` if a match is already active) and returns
+`{ "match": <activeMatch> }`. Player is White.
 
 ### `POST /api/match/move` `{ "from": "e2", "to": "e4", "promotion": "witch"|null, "castle": true|false|null }`
 Applies the player's move if legal (400 otherwise), then the AI replies.
@@ -98,7 +99,9 @@ status (400 bad input, 409 conflict/not-ready, 502 PayPal failure).
 - `POST /api/training/move` `{ "sessionId", "from": "a1", "to": "a4" }` →
   `{ "correct": true|false, "message", "done": bool, "board", "step",
   "stepsTotal", "instruction" }` (instruction/step present when advancing).
-  A legal-but-wrong move returns `correct: false` and the board after it.
+  A legal-but-wrong move returns `correct: false` and the board as it was
+  (the position did not change, so the client must not be shown a
+  position it cannot play from).
 
 `GET /api/state` also includes `lessons` (same shape as /api/training) and
 `teamScore`.

@@ -359,12 +359,12 @@ const DIFFICULTIES = [
 const PACKS = [
   { id: "pouch", name: "Pouch of Gold", gold: 50, priceCents: 99, priceLabel: "$0.99", badge: null,
     tagline: "A quick top-up — 2 Squire's Trials, or 1 Knight's Campaign." },
-  { id: "satchel", name: "Satchel of Gold", gold: 165, priceCents: 299, priceLabel: "$2.99", badge: "Best value",
-    tagline: "The best value per coin to get started — covers 3 Knight's Campaigns, with gold left over." },
+  { id: "satchel", name: "Satchel of Gold", gold: 165, priceCents: 299, priceLabel: "$2.99", badge: null,
+    tagline: "A solid stash to get started — covers 3 Knight's Campaigns, with gold left over." },
   { id: "chest", name: "Chest of Gold", gold: 335, priceCents: 499, priceLabel: "$4.99", badge: null,
     tagline: "A run at the Dragonlord's Throne plus a Warlord's Gambit — a full high-stakes campaign." },
-  { id: "vault", name: "Dragon Vault", gold: 835, priceCents: 999, priceLabel: "$9.99", badge: "Most gold",
-    tagline: "Two shots at the Celestial Throne, with gold to spare — the full campaign fund." },
+  { id: "vault", name: "Dragon Vault", gold: 835, priceCents: 999, priceLabel: "$9.99", badge: "Best value",
+    tagline: "Two shots at the Celestial Throne, with gold to spare — the full campaign fund, and the most gold per dollar." },
 ];
 
 // Battle-reward card roll weights per difficulty. RECONSTRUCTION: the

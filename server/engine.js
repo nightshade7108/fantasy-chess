@@ -20,6 +20,10 @@ function idx(r, f) { return r * 8 + f; }
 function inBoard(r, f) { return r >= 0 && r < 8 && f >= 0 && f < 8; }
 function toAlgebraic(sq) { return "abcdefgh"[sq.f] + (sq.r + 1); }
 function fromAlgebraic(s) {
+  // Strict: anything that is not exactly one file letter + one rank digit
+  // is malformed (e.g. "e2e4" used to silently parse as "e2"). Callers
+  // must check for null and reject the input as a bad square.
+  if (typeof s !== "string" || !/^[a-h][1-8]$/.test(s)) return null;
   return { f: "abcdefgh".indexOf(s[0]), r: parseInt(s[1], 10) - 1 };
 }
 function other(color) { return color === "w" ? "b" : "w"; }
@@ -54,7 +58,10 @@ function positionKey(state) {
   let s = state.turn;
   for (let i = 0; i < 64; i++) {
     const p = state.board[i];
-    s += p ? `/${p.color}${p.role[0]}${i}` : "";
+    // The full role, not just its first letter: wizard, witch and warlord
+    // all start with "w", so a first-letter key collided and could report
+    // a false threefold repetition for two different positions.
+    s += p ? `/${p.color}${p.role}${i}` : "";
   }
   s += `|${state.castling.wk ? 1 : 0}${state.castling.wq ? 1 : 0}${state.castling.bk ? 1 : 0}${state.castling.bq ? 1 : 0}`;
   s += `|${state.ep === null ? "-" : state.ep}`;
@@ -423,6 +430,13 @@ function genCastling(moves, state, color) {
     const rookFile = side === "K" ? 7 : 0;
     const rook = state.board[idx(rank, rookFile)];
     if (!rook || rook.role !== "archer" || rook.color !== color) return;
+    // The corner piece must be one of the side's original archers, not a
+    // soldier that promoted into an archer and wandered onto the corner:
+    // a promoted piece takes the equipped archer's hero id, so the hero
+    // alone cannot tell them apart — promotion is tracked on the piece.
+    // (With castleAfterMove the rights check below is bypassed, which is
+    // what let a promoted archer castle.)
+    if (rook.promoted) return;
     if (!fx.castleAfterMove && !rights[rightKey[side]]) return;
     const between = side === "K" ? [5, 6] : [1, 2, 3];
     for (const f of between) if (state.board[idx(rank, f)]) return;
@@ -477,11 +491,19 @@ function doMove(state, move) {
   if (move.promotion) {
     undo.prevRole = piece.role;
     undo.prevHero = piece.hero;
+    undo.prevPromoted = piece.promoted;
     const heroes = piece.color === "w" ? state.heroesW : state.heroesB;
     piece.role = move.promotion;
     piece.hero = heroes[move.promotion];
+    // Mark the piece as promoted: it is not one of the side's original
+    // pieces of its new role (in particular it may never serve as the
+    // corner archer for castling — see genCastling).
+    piece.promoted = true;
   }
-  if (move.double) {
+  // A double march only leaves an en-passant square behind when the piece
+  // is still a soldier afterwards: a double march that promotes leaves a
+  // stale ep square that would wrongly suppress a diagonal step onto it.
+  if (move.double && !move.promotion) {
     state.ep = idx((move.from.r + move.to.r) / 2, move.from.f);
   } else {
     state.ep = null;
@@ -521,6 +543,7 @@ function undoMove(state, move, undo) {
   if (move.promotion) {
     piece.role = undo.prevRole;
     piece.hero = undo.prevHero;
+    piece.promoted = undo.prevPromoted;
   }
   if (move.castle && undo.rookFrom !== null) {
     const rook = state.board[undo.rookTo];
@@ -584,7 +607,7 @@ function legalMoves(state) {
     const next = applyMove(state, move);
     if (!isCheck(next, color)) legal.push(move);
   }
-  for (const move of legal) move.san = sanFor(state, move);
+  for (const move of legal) move.san = sanFor(state, move, legal);
   return legal;
 }
 
@@ -602,10 +625,33 @@ function legalMovesFor(state, color) {
   return legalMoves(probe);
 }
 
-function sanFor(state, move) {
+function sanFor(state, move, legalCache) {
   if (move.castle === "K") return "O-O";
   if (move.castle === "Q") return "O-O-O";
   let s = ROLE_LETTER[move.piece];
+  if (move.piece !== "soldier") {
+    // Disambiguation (standard SAN): when another piece of the same role
+    // and colour can legally move to the same square, add the moving
+    // piece's file — or its rank if another rival shares the file, or
+    // both if file and rank are both shared. Castling moves are excluded:
+    // they are written O-O / O-O-O, never with the piece letter.
+    // `legalCache` is the caller's already-computed legal move list; with
+    // no cache, fall back to legalMovesFast (which assigns no SANs, so
+    // this can never recurse the way legalMoves() would).
+    const all = legalCache || legalMovesFast(state);
+    const rivals = all.filter(
+      (m) => !m.castle && m.piece === move.piece && m.color === move.color &&
+        m.to.r === move.to.r && m.to.f === move.to.f &&
+        (m.from.r !== move.from.r || m.from.f !== move.from.f)
+    );
+    if (rivals.length > 0) {
+      const sameFile = rivals.some((m) => m.from.f === move.from.f);
+      const sameRank = rivals.some((m) => m.from.r === move.from.r);
+      if (!sameFile) s += "abcdefgh"[move.from.f];
+      else if (!sameRank) s += String(move.from.r + 1);
+      else s += "abcdefgh"[move.from.f] + String(move.from.r + 1);
+    }
+  }
   if (move.captured || move.enPassant) {
     if (move.piece === "soldier") s += "abcdefgh"[move.from.f] + "x";
     else s += "x";
@@ -625,11 +671,25 @@ function sanFor(state, move) {
 }
 
 function insufficientMaterial(state) {
+  const minors = [];
   for (let i = 0; i < 64; i++) {
     const p = state.board[i];
-    if (p && p.role !== "warlord") return false;
+    if (!p) continue;
+    if (p.role === "warlord") continue;
+    // Soldiers, archers and witches can always help force mate.
+    if (p.role === "soldier" || p.role === "archer" || p.role === "witch") return false;
+    minors.push({ role: p.role, color: p.color, sq: i });
   }
-  return true;
+  if (minors.length === 0) return true; // bare warlords
+  if (minors.length === 1) return true; // warlord + one minor vs bare warlord
+  if (minors.length === 2 && minors[0].role === "wizard" && minors[1].role === "wizard" &&
+      minors[0].color !== minors[1].color) {
+    // Warlord + wizard vs warlord + wizard is dead only when both
+    // wizards stand on the same colour of square.
+    const colour = (m) => (Math.floor(m.sq / 8) + (m.sq % 8)) % 2;
+    return colour(minors[0]) === colour(minors[1]);
+  }
+  return false;
 }
 
 function gameStatus(state) {
@@ -651,7 +711,7 @@ function serializeBoard(state) {
     const row = [];
     for (let f = 0; f < 8; f++) {
       const p = state.board[idx(r, f)];
-      row.push(p ? { role: p.role, color: p.color, hero: p.hero } : null);
+      row.push(p ? { role: p.role, color: p.color, hero: p.hero, ...(p.promoted ? { promoted: true } : {}) } : null);
     }
     ranks.push(row);
   }
@@ -663,7 +723,7 @@ function deserializeBoard(ranks, heroesW, heroesB) {
   for (let r = 0; r < 8; r++) {
     for (let f = 0; f < 8; f++) {
       const cell = ranks[r][f];
-      if (cell) board[idx(r, f)] = { role: cell.role, color: cell.color, hero: cell.hero, moved: true };
+      if (cell) board[idx(r, f)] = { role: cell.role, color: cell.color, hero: cell.hero, moved: true, promoted: !!cell.promoted };
     }
   }
   return board;

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS matches (
   keys JSONB NOT NULL DEFAULT '[]'::jsonb,
   history JSONB NOT NULL DEFAULT '[]'::jsonb,
   entry_fee INTEGER NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -69,6 +70,38 @@ CREATE TABLE IF NOT EXISTS training_sessions (
 
 async function initDb(pool) {
   await pool.query(SCHEMA);
+  // Migrations for databases created before these columns/indexes existed.
+  await pool.query("ALTER TABLE matches ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1");
+  // A player must never hold two active matches (a past race created
+  // duplicates). Keep the newest active match per player, then enforce it
+  // with a partial unique index. The index is created defensively: if
+  // duplicates somehow remain, the server still starts and the
+  // transactions + row locks below remain the primary guard.
+  // (Grouped in JS: pg-mem, the in-memory Postgres used in tests, does
+  // not support GROUP BY ... HAVING COUNT(*) > 1.)
+  const actives = await pool.query(
+    "SELECT id, player_id FROM matches WHERE status = 'active' ORDER BY player_id, created_at DESC, id DESC"
+  );
+  const seenPlayers = new Set();
+  let removedDupes = 0;
+  for (const row of actives.rows) {
+    if (seenPlayers.has(row.player_id)) {
+      await pool.query("DELETE FROM matches WHERE id = $1", [row.id]);
+      removedDupes++;
+    } else {
+      seenPlayers.add(row.player_id);
+    }
+  }
+  if (removedDupes > 0) {
+    console.warn(`initDb: removed ${removedDupes} duplicate active match(es)`);
+  }
+  try {
+    await pool.query(
+      "CREATE UNIQUE INDEX IF NOT EXISTS matches_one_active_per_player ON matches(player_id) WHERE status = 'active'"
+    );
+  } catch (e) {
+    console.warn("initDb: could not create the one-active-match index:", e.message);
+  }
   // Pre-seed the shop config from environment variables, if set and no
   // config row exists yet (Render dashboard env vars win over the panel).
   const clientId = process.env.PAYPAL_CLIENT_ID;
@@ -81,6 +114,58 @@ async function initDb(pool) {
       [clientId, secret, env]
     );
   }
+}
+
+// --- Transactions -------------------------------------------------------
+// Run `fn(client)` inside a single Postgres transaction on one pooled
+// client. Every db helper takes a pool-or-client as its first argument, so
+// pass `client` through to keep every statement in the transaction. On
+// error the transaction rolls back and the error rethrows.
+async function withTransaction(pool, fn) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (e) {
+    try { await client.query("ROLLBACK"); } catch { /* already closed */ }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Per-player in-process lock, keyed by player id. The database mechanisms
+// (row locks, the partial unique index, the version column) are the real
+// guarantee across processes; this lock additionally serializes one
+// player's concurrent requests inside this process, which is what makes
+// the race fixes deterministic against pg-mem in tests (its pool hands
+// out a single shared client, so two "transactions" there would otherwise
+// see each other's uncommitted writes). Different players never block
+// each other.
+const playerLocks = new Map();
+async function withPlayerLock(playerId, fn) {
+  const prev = playerLocks.get(playerId) || Promise.resolve();
+  let release;
+  const mine = new Promise((r) => { release = r; });
+  const chained = prev.then(() => mine);
+  playerLocks.set(playerId, chained);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (playerLocks.get(playerId) === chained) playerLocks.delete(playerId);
+  }
+}
+
+// The database's own current date (one clock for the stipend gate in
+// claimStipend and the banner in buildStateResponse — never the app
+// server's clock, which can disagree around midnight).
+async function currentDate(pool) {
+  const res = await pool.query("SELECT CURRENT_DATE AS today");
+  return new Date(res.rows[0].today).toISOString().slice(0, 10);
 }
 
 async function getOrCreatePlayer(pool, playerId) {
@@ -196,9 +281,40 @@ async function getActiveMatch(pool, playerId) {
   return res.rows[0] || null;
 }
 
+// Same as getActiveMatch, but locks the row for the duration of the
+// caller's transaction: a second concurrent move for this player blocks
+// here, then re-reads the post-move state instead of applying its move
+// to the stale pre-move board.
+async function getActiveMatchForUpdate(client, playerId) {
+  const res = await client.query(
+    "SELECT * FROM matches WHERE player_id = $1 AND status = 'active' FOR UPDATE",
+    [playerId]
+  );
+  return res.rows[0] || null;
+}
+
 async function getMatch(pool, matchId) {
   const res = await pool.query("SELECT * FROM matches WHERE id = $1", [matchId]);
   return res.rows[0] || null;
+}
+
+// Version-guarded save for the move handler: updates the match only if
+// its version is still the one the handler read at the start of its
+// transaction, and bumps the version. Returns false (0 rows) when another
+// request already applied a move — the caller must abort (rolling back
+// any settlement done in the same transaction) instead of saving over it.
+async function saveMatchVersioned(client, match, expectedVersion) {
+  const res = await client.query(
+    `UPDATE matches SET status = $2, board = $3, turn = $4, castling = $5, ep = $6,
+       halfmove = $7, fullmove = $8, heroes_w = $9, heroes_b = $10,
+       keys = $11, history = $12, version = version + 1, updated_at = now()
+     WHERE id = $1 AND version = $13`,
+    [match.id, match.status, JSON.stringify(match.board), match.turn,
+     JSON.stringify(match.castling), match.ep, match.halfmove, match.fullmove,
+     JSON.stringify(match.heroesW), JSON.stringify(match.heroesB),
+     JSON.stringify(match.keys), JSON.stringify(match.history), expectedVersion]
+  );
+  return res.rowCount > 0;
 }
 
 async function deleteMatch(pool, matchId) {
@@ -223,9 +339,26 @@ async function recordPurchase(pool, { playerId, packId, captureId, priceCents, g
   }
 }
 
-async function findPurchaseByCapture(pool, captureId) {
-  const res = await pool.query("SELECT * FROM purchases WHERE capture_id = $1", [captureId]);
-  return res.rows[0] || null;
+// Transaction-safe purchase recording: record the capture and credit the
+// gold in the caller's transaction, so the two can never be split (a
+// recorded capture with no credit, or a credit with no record). Returns
+// { inserted, gold }: inserted=false when this capture was already
+// recorded (idempotent replay — credit nothing, just report the balance).
+// NOTE: do NOT use the plain recordPurchase() helper inside a transaction
+// — its catch of the unique-violation would abort the transaction.
+async function recordPurchaseAndCredit(client, { playerId, packId, captureId, priceCents, gold }) {
+  const existing = await client.query(
+    "SELECT id FROM purchases WHERE capture_id = $1",
+    [captureId]
+  );
+  if (existing.rows.length > 0) return { inserted: false, gold: null };
+  await client.query(
+    `INSERT INTO purchases (player_id, pack_id, capture_id, price_cents, gold)
+     VALUES ($1,$2,$3,$4,$5)`,
+    [playerId, packId, captureId, priceCents, gold]
+  );
+  const newGold = await addGold(client, playerId, gold);
+  return { inserted: true, gold: newGold };
 }
 
 // --- Shop config ---
@@ -247,8 +380,9 @@ async function removeShopConfig(pool) {
 }
 
 module.exports = {
-  initDb, getOrCreatePlayer, getCollection, addToCollection, setGold, addGold,
+  initDb, withTransaction, withPlayerLock, currentDate,
+  getOrCreatePlayer, getCollection, addToCollection, setGold, addGold,
   recordResult, setEquipped, claimStipend, resetPlayer,
-  saveMatch, getActiveMatch, getMatch, deleteMatch,
-  recordPurchase, findPurchaseByCapture, getShopConfig, saveShopConfig, removeShopConfig,
+  saveMatch, saveMatchVersioned, getActiveMatch, getActiveMatchForUpdate, getMatch, deleteMatch,
+  recordPurchase, recordPurchaseAndCredit, getShopConfig, saveShopConfig, removeShopConfig,
 };

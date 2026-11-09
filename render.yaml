@@ -38,6 +38,11 @@ services:
         sync: false
       - key: PAYPAL_ENV
         value: live
+      # Public origin of the site, used for PayPal return/cancel URLs so
+      # they are never built from the request Host header (a poisoned Host
+      # could redirect the payer elsewhere after approval).
+      - key: PUBLIC_URL
+        value: https://fantasy-chess.onrender.com
 
 databases:
   - name: fantasy-chess-db

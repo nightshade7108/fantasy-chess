@@ -36,7 +36,11 @@ function parseCookies(header) {
   if (!header) return out;
   for (const part of header.split(";")) {
     const [k, ...rest] = part.trim().split("=");
-    if (k) out[k] = decodeURIComponent(rest.join("="));
+    if (!k) continue;
+    // A malformed value (invalid % escapes) must not 500 every request:
+    // decodeURIComponent throws URIError, so treat an undecodable value
+    // as absent and let the request start a fresh profile.
+    try { out[k] = decodeURIComponent(rest.join("=")); } catch { /* ignore */ }
   }
   return out;
 }
@@ -139,7 +143,10 @@ async function buildStateResponse(pool, player, opts) {
   const activeRow = await db.getActiveMatch(pool, player.id);
   const cfg = await db.getShopConfig(pool);
   const score = teamScore(equipped, collection);
-  const today = new Date().toISOString().slice(0, 10);
+  // "Today" comes from the database's clock — the same clock the stipend
+  // gate in claimStipend uses — so the banner can never disagree with
+  // the server around midnight if the two clocks ever differ.
+  const today = await db.currentDate(pool);
   const claimedToday = player.last_stipend_date &&
     new Date(player.last_stipend_date).toISOString().slice(0, 10) === today;
   const out = {
@@ -225,109 +232,148 @@ function createApp(pool) {
       const { difficultyId } = req.body || {};
       const diff = difficultyById(difficultyId);
       if (!diff) throw apiError(400, "bad_difficulty", "Unknown difficulty.");
-      const existing = await db.getActiveMatch(pool, req.player.id);
-      if (existing) throw apiError(409, "match_active", "A match is already in progress.");
-      if (req.player.gold < diff.cost) throw apiError(400, "not_enough_gold", "Not enough gold for this battle.");
-      const state = engine.createGame(asJson(req.player.equipped) || { ...STARTERS }, diff.enemyBand);
-      const match = {
-        id: crypto.randomUUID(),
-        playerId: req.player.id,
-        difficulty: diff.id,
-        status: "active",
-        ...engineStateToRow(state),
-        history: [],
-        entryFee: diff.cost,
-      };
-      await db.saveMatch(pool, match);
-      await db.setGold(pool, req.player.id, req.player.gold - diff.cost);
-      const row = await db.getMatch(pool, match.id);
-      res.json({ match: serializeMatch(row), gold: req.player.gold - diff.cost });
-    } catch (e) { next(e); }
+      // Check + insert + charge happen in ONE transaction, so concurrent
+      // starts cannot create two active matches for one entry fee:
+      // the player row is locked (SELECT ... FOR UPDATE) to serialize
+      // starts, the charge is atomic (gold >= cost, else 0 rows), and a
+      // partial unique index on active matches backs the check up.
+      const result = await db.withPlayerLock(req.player.id, () =>
+        db.withTransaction(pool, async (client) => {
+          await client.query("SELECT * FROM players WHERE id = $1 FOR UPDATE", [req.player.id]);
+          const existing = await db.getActiveMatch(client, req.player.id);
+          if (existing) throw apiError(409, "match_active", "A match is already in progress.");
+          const charged = await client.query(
+            // The ::int casts are load-bearing for pg-mem (the in-memory
+            // Postgres used in tests): it mis-parses `gold - $1` as
+            // `$1 - gold` without them. Real Postgres treats the casts as
+            // no-ops on an integer column.
+            "UPDATE players SET gold = gold - $1::int WHERE id = $2 AND gold >= $3::int RETURNING gold",
+            [diff.cost, req.player.id, diff.cost]
+          );
+          if (charged.rows.length === 0) throw apiError(400, "not_enough_gold", "Not enough gold for this battle.");
+          const state = engine.createGame(asJson(req.player.equipped) || { ...STARTERS }, diff.enemyBand);
+          const match = {
+            id: crypto.randomUUID(),
+            playerId: req.player.id,
+            difficulty: diff.id,
+            status: "active",
+            ...engineStateToRow(state),
+            history: [],
+            entryFee: diff.cost,
+          };
+          await db.saveMatch(client, match);
+          return { match, gold: charged.rows[0].gold };
+        })
+      );
+      const row = await db.getMatch(pool, result.match.id);
+      res.json({ match: serializeMatch(row), gold: result.gold });
+    } catch (e) {
+      // The partial unique index fired instead of the check (a start raced
+      // in and committed first): same answer as the check, 409.
+      if (e.code === "23505") return next(apiError(409, "match_active", "A match is already in progress."));
+      next(e);
+    }
   });
 
   app.post("/api/match/move", async (req, res, next) => {
     try {
       const { from, to, promotion, castle } = req.body || {};
       if (!from || !to) throw apiError(400, "bad_move", "from and to squares are required.");
-      const row = await db.getActiveMatch(pool, req.player.id);
-      if (!row) throw apiError(409, "no_active_match", "No match in progress.");
-      const state = rowToEngineState(row);
-      if (state.turn !== "w") throw apiError(409, "not_your_turn", "It is not your turn.");
       const f = engine.fromAlgebraic(from);
       const t = engine.fromAlgebraic(to);
-      if (f.f < 0 || f.r < 0 || t.f < 0 || t.r < 0) throw apiError(400, "bad_move", "Bad squares.");
-      let candidates = engine.legalMoves(state).filter(
-        (m) => m.from.r === f.r && m.from.f === f.f && m.to.r === t.r && m.to.f === t.f
-      );
-      if (candidates.length === 0) throw apiError(400, "illegal_move", "That move is not legal.");
-      if (promotion) {
-        candidates = candidates.filter((m) => m.promotion === promotion);
-        if (candidates.length === 0) throw apiError(400, "illegal_move", "That promotion is not legal.");
-      } else if (candidates[0].promotion) {
-        // Promotion not specified: default to witch.
-        candidates = candidates.filter((m) => m.promotion === "witch");
-      }
-      if (castle === true) candidates = candidates.filter((m) => m.castle);
-      else if (castle === false) candidates = candidates.filter((m) => !m.castle);
-      if (candidates.length === 0) throw apiError(400, "illegal_move", "That move is not legal.");
-      // Prefer en passant, then castling, then captures, when several moves
-      // share from/to (e.g. a range-2 warlord stepping two squares vs castling).
-      candidates.sort((a, b) => (b.enPassant - a.enPassant) || ((b.castle ? 1 : 0) - (a.castle ? 1 : 0)) || ((b.captured ? 1 : 0) - (a.captured ? 1 : 0)));
-      const move = candidates[0];
-      let next = engine.applyMove(state, move);
-      // Whether the player's move gives check — the client shows the staged
-      // board (after the player's move only) during the AI think pause, and
-      // the CHECK flag must not disappear for that beat.
-      const checkAfterPlayer = engine.isCheck(next, next.turn);
-      // Board after the player's move only (before the AI replies) — the
-      // client renders this first so the player's move lands instantly,
-      // then animates the AI's reply on top of it.
-      const boardAfterPlayer = engine.serializeBoard(next);
-      const history = [...(asJson(row.history) || []), { from, to, san: move.san }];
-      let aiMove = null;
-      let settlement = null;
+      if (!f || !t) throw apiError(400, "bad_move", "Bad squares.");
+      // The whole move — read, validate, player move, AI reply, settle,
+      // save — runs in ONE transaction under a per-player lock. The match
+      // row is locked (SELECT ... FOR UPDATE) and the save is guarded by
+      // its version: a second request for the same move re-reads the
+      // post-move state (where its move is now illegal) or fails the
+      // version check, so a terminal position can only ever settle once.
+      const outcome = await db.withPlayerLock(req.player.id, () =>
+        db.withTransaction(pool, async (client) => {
+          const row = await db.getActiveMatchForUpdate(client, req.player.id);
+          if (!row) throw apiError(409, "no_active_match", "No match in progress.");
+          const state = rowToEngineState(row);
+          if (state.turn !== "w") throw apiError(409, "not_your_turn", "It is not your turn.");
+          let candidates = engine.legalMoves(state).filter(
+            (m) => m.from.r === f.r && m.from.f === f.f && m.to.r === t.r && m.to.f === t.f
+          );
+          if (candidates.length === 0) throw apiError(400, "illegal_move", "That move is not legal.");
+          if (promotion) {
+            candidates = candidates.filter((m) => m.promotion === promotion);
+            if (candidates.length === 0) throw apiError(400, "illegal_move", "That promotion is not legal.");
+          } else if (candidates[0].promotion) {
+            // Promotion not specified: default to witch.
+            candidates = candidates.filter((m) => m.promotion === "witch");
+          }
+          if (castle === true) candidates = candidates.filter((m) => m.castle);
+          else if (castle === false) candidates = candidates.filter((m) => !m.castle);
+          if (candidates.length === 0) throw apiError(400, "illegal_move", "That move is not legal.");
+          // Prefer en passant, then castling, then captures, when several moves
+          // share from/to (e.g. a range-2 warlord stepping two squares vs castling).
+          candidates.sort((a, b) => (b.enPassant - a.enPassant) || ((b.castle ? 1 : 0) - (a.castle ? 1 : 0)) || ((b.captured ? 1 : 0) - (a.captured ? 1 : 0)));
+          const move = candidates[0];
+          let next = engine.applyMove(state, move);
+          // Whether the player's move gives check — the client shows the staged
+          // board (after the player's move only) during the AI think pause, and
+          // the CHECK flag must not disappear for that beat.
+          const checkAfterPlayer = engine.isCheck(next, next.turn);
+          // Board after the player's move only (before the AI replies) — the
+          // client renders this first so the player's move lands instantly,
+          // then animates the AI's reply on top of it.
+          const boardAfterPlayer = engine.serializeBoard(next);
+          const history = [...(asJson(row.history) || []), { from, to, san: move.san }];
+          let aiMove = null;
 
-      const statusAfterPlayer = engine.gameStatus(next);
-      if (statusAfterPlayer === "active") {
-        const ai = chooseMove(next, row.difficulty);
-        if (ai) {
-          // Move flags are presentation data for the client animation
-          // (teleport vs slide, castling rook, en passant, promotion).
-          aiMove = {
-            from: engine.toAlgebraic(ai.from), to: engine.toAlgebraic(ai.to), san: ai.san,
-            castle: ai.castle || null, enPassant: !!ai.enPassant,
-            promotion: ai.promotion || null, teleport: !!ai.teleport,
-          };
-          next = engine.applyMove(next, ai);
-          history.push({ from: aiMove.from, to: aiMove.to, san: ai.san });
-        }
-      }
-      const finalStatus = engine.gameStatus(next);
-      const finished = finalStatus !== "active";
-      if (finished) {
-        const result = finalStatus === "checkmate"
-          ? (next.turn === "b" ? "win" : "loss")
-          : "draw";
-        settlement = await settleMatch(pool, req.player, row, result);
-      }
-      await db.saveMatch(pool, {
-        id: row.id, playerId: req.player.id, difficulty: row.difficulty,
-        status: finished ? "finished" : "active",
-        ...engineStateToRow(next), history, entryFee: row.entry_fee,
-      });
-      const fresh = finished ? null : await db.getMatch(pool, row.id);
+          const statusAfterPlayer = engine.gameStatus(next);
+          if (statusAfterPlayer === "active") {
+            const ai = chooseMove(next, row.difficulty);
+            if (ai) {
+              // Move flags are presentation data for the client animation
+              // (teleport vs slide, castling rook, en passant, promotion).
+              aiMove = {
+                from: engine.toAlgebraic(ai.from), to: engine.toAlgebraic(ai.to), san: ai.san,
+                castle: ai.castle || null, enPassant: !!ai.enPassant,
+                promotion: ai.promotion || null, teleport: !!ai.teleport,
+              };
+              next = engine.applyMove(next, ai);
+              history.push({ from: aiMove.from, to: aiMove.to, san: ai.san });
+            }
+          }
+          const finalStatus = engine.gameStatus(next);
+          const finished = finalStatus !== "active";
+          // Version-guarded save FIRST: if another request already applied
+          // a move, this touches 0 rows and the whole transaction —
+          // including any settlement below — rolls back instead of
+          // settling the same position twice.
+          const saved = await db.saveMatchVersioned(client, {
+            id: row.id, playerId: req.player.id, difficulty: row.difficulty,
+            status: finished ? "finished" : "active",
+            ...engineStateToRow(next), history, entryFee: row.entry_fee,
+          }, row.version);
+          if (!saved) throw apiError(409, "match_conflict", "The match changed while your move was processed. Refresh and try again.");
+          let settlement = null;
+          if (finished) {
+            const result = finalStatus === "checkmate"
+              ? (next.turn === "b" ? "win" : "loss")
+              : "draw";
+            settlement = await settleMatch(client, req.player, row, result);
+          }
+          const fresh = finished ? null : await db.getMatch(client, row.id);
+          return { match: fresh, gameOver: finished, aiMove, boardAfterPlayer, checkAfterPlayer, settlement };
+        })
+      );
       res.json({
-        match: finished ? null : serializeMatch(fresh),
-        gameOver: finished,
-        aiMove,
-        boardAfterPlayer,
-        checkAfterPlayer,
-        settlement,
+        match: outcome.gameOver ? null : serializeMatch(outcome.match),
+        gameOver: outcome.gameOver,
+        aiMove: outcome.aiMove,
+        boardAfterPlayer: outcome.boardAfterPlayer,
+        checkAfterPlayer: outcome.checkAfterPlayer,
+        settlement: outcome.settlement,
       });
     } catch (e) { next(e); }
   });
 
-  async function settleMatch(pool, player, row, result) {
+  async function settleMatch(client, player, row, result) {
     const diff = difficultyById(row.difficulty);
     let goldAwarded = 0;
     let card = null;
@@ -335,11 +381,11 @@ function createApp(pool) {
       goldAwarded = diff.winGold;
       const cardId = rollReward(diff.id);
       card = heroById(cardId);
-      await db.addToCollection(pool, player.id, cardId);
+      await db.addToCollection(client, player.id, cardId);
     } else if (result === "draw") {
       goldAwarded = diff.drawGold;
     }
-    const gold = await db.recordResult(pool, player.id, result, goldAwarded);
+    const gold = await db.recordResult(client, player.id, result, goldAwarded);
     return { result, goldAwarded, card: card ? publicHero(card) : null, gold };
   }
 
@@ -412,6 +458,16 @@ function createApp(pool) {
     } catch (e) { next(e); }
   });
 
+  // Constant-time owner-token comparison: compare SHA-256 hashes with
+  // timingSafeEqual so a wrong token cannot be distinguished by timing.
+  function ownerTokenMatches(provided) {
+    const required = process.env.OWNER_SETUP_TOKEN;
+    if (!required || typeof provided !== "string") return false;
+    const a = crypto.createHash("sha256").update(required).digest();
+    const b = crypto.createHash("sha256").update(provided).digest();
+    return crypto.timingSafeEqual(a, b);
+  }
+
   app.post("/api/shop/config", async (req, res, next) => {
     try {
       const { clientId, secret, env, ownerToken } = req.body || {};
@@ -419,7 +475,7 @@ function createApp(pool) {
       if (!required) {
         throw apiError(409, "setup_disabled", "In-app setup is disabled. Configure PayPal with PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET environment variables.");
       }
-      if (ownerToken !== required) throw apiError(403, "bad_owner_token", "Wrong owner token.");
+      if (!ownerTokenMatches(ownerToken)) throw apiError(403, "bad_owner_token", "Wrong owner token.");
       if (!clientId || !secret) throw apiError(400, "bad_config", "Client ID and Secret are required.");
       const cleanEnv = env === "live" ? "live" : "sandbox";
       await db.saveShopConfig(pool, { clientId, secret, env: cleanEnv });
@@ -430,8 +486,10 @@ function createApp(pool) {
   app.post("/api/shop/remove-config", async (req, res, next) => {
     try {
       const { ownerToken } = req.body || {};
-      const required = process.env.OWNER_SETUP_TOKEN;
-      if (!required || ownerToken !== required) throw apiError(403, "bad_owner_token", "Wrong owner token.");
+      if (!process.env.OWNER_SETUP_TOKEN) {
+        throw apiError(409, "setup_disabled", "In-app setup is disabled. Configure PayPal with PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET environment variables.");
+      }
+      if (!ownerTokenMatches(ownerToken)) throw apiError(403, "bad_owner_token", "Wrong owner token.");
       await db.removeShopConfig(pool);
       res.json({ configured: false });
     } catch (e) { next(e); }
@@ -443,20 +501,36 @@ function createApp(pool) {
     return new PayPalClient({ clientId: cfg.client_id, secret: cfg.secret, env: cfg.env });
   }
 
+  // Origin for PayPal return/cancel URLs. Never build these from an
+  // untrusted Host header: a poisoned Host could redirect the payer to an
+  // attacker domain after approval. PUBLIC_URL (set in render.yaml) wins;
+  // otherwise only the site's own host or a local dev host is trusted,
+  // and anything else falls back to the known production origin.
+  function publicOrigin(req) {
+    if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/+$/, "");
+    const host = req.get("host") || "";
+    if (/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host) || host === "fantasy-chess.onrender.com") {
+      return `${req.protocol}://${host}`;
+    }
+    return "https://fantasy-chess.onrender.com";
+  }
+
   app.post("/api/shop/create-order", async (req, res, next) => {
     try {
       const { packId } = req.body || {};
       const pack = packById(packId);
       if (!pack) throw apiError(400, "bad_pack", "Unknown gold pack.");
       const client = await paypalClientFor(pool);
-      const origin = `${req.protocol}://${req.get("host")}`;
+      const origin = publicOrigin(req);
       const order = await client.createOrder({
         amountCents: pack.priceCents,
         customId: pack.id,
         returnUrl: `${origin}/?shop=return`,
         cancelUrl: `${origin}/?shop=cancel`,
       });
-      res.json({ orderId: order.id, approveUrl: PayPalClient.approveUrl(order) });
+      const approveUrl = PayPalClient.approveUrl(order);
+      if (!approveUrl) throw apiError(502, "paypal_error", "PayPal did not return an approval link. Please try again.");
+      res.json({ orderId: order.id, approveUrl });
     } catch (e) { next(e); }
   });
 
@@ -494,18 +568,30 @@ function createApp(pool) {
     if (capture.status !== "COMPLETED" || amount.currency_code !== "USD" || cents !== pack.priceCents) {
       throw apiError(502, "verification_failed", "PayPal's capture did not verify (wrong status, currency or amount). No gold was credited.");
     }
-    const inserted = await db.recordPurchase(pool, {
-      playerId, packId: pack.id, captureId: capture.id,
-      priceCents: pack.priceCents, gold: pack.gold,
+    const inserted = await db.withPlayerLock(playerId, async () => {
+      try {
+        return await db.withTransaction(pool, (client) =>
+          db.recordPurchaseAndCredit(client, {
+            playerId, packId: pack.id, captureId: capture.id,
+            priceCents: pack.priceCents, gold: pack.gold,
+          })
+        );
+      } catch (e) {
+        // Lost a race with a concurrent settle of the same capture: the
+        // other request recorded it and credited the gold; report the
+        // idempotent replay (credited: 0) instead of erroring.
+        if (e.code === "23505") return { inserted: false, gold: null };
+        throw e;
+      }
     });
     let gold;
-    if (inserted) {
-      gold = await db.addGold(pool, playerId, pack.gold);
+    if (inserted.inserted) {
+      gold = inserted.gold;
     } else {
       const player = await db.getOrCreatePlayer(pool, playerId);
       gold = player.gold;
     }
-    return { gold, credited: inserted ? pack.gold : 0, packId: pack.id };
+    return { gold, credited: inserted.inserted ? pack.gold : 0, packId: pack.id };
   }
 
   app.post("/api/shop/complete-order", async (req, res, next) => {
@@ -571,6 +657,9 @@ function createApp(pool) {
       const state = sessionStateToEngine(asJson(sess.state));
       const f = engine.fromAlgebraic(from || "");
       const t = engine.fromAlgebraic(to || "");
+      if (!f || !t) {
+        return res.json({ correct: false, message: "Those aren't valid squares. Look at the hint and try again.", board: engine.serializeBoard(state) });
+      }
       let candidates = engine.legalMoves(state).filter(
         (m) => m.from.r === f.r && m.from.f === f.f && m.to.r === t.r && m.to.f === t.f
       );
@@ -612,6 +701,19 @@ function createApp(pool) {
     } catch (e) { next(e); }
   });
 
+  // Legal moves for the current training position, so the client can
+  // highlight destinations and list possible moves just like in battle.
+  // Read-only: training steps are server-validated on /api/training/move.
+  app.get("/api/training/moves", async (req, res, next) => {
+    try {
+      const { sessionId } = req.query;
+      const sess = (await pool.query("SELECT * FROM training_sessions WHERE id = $1 AND player_id = $2", [sessionId, req.player.id])).rows[0];
+      if (!sess || sess.completed) return res.json({ moves: [] });
+      const state = sessionStateToEngine(asJson(sess.state));
+      res.json({ moves: engine.legalMoves(state).map(serializeMove) });
+    } catch (e) { next(e); }
+  });
+
   function sessionState(engineState) {
     return {
       board: engine.serializeBoard(engineState),
@@ -633,6 +735,9 @@ function createApp(pool) {
   // Error handler: always JSON.
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
+    if (err.type === "entity.parse.failed") {
+      return res.status(400).json({ error: "bad_json", message: "Request body is not valid JSON." });
+    }
     if (err instanceof PayPalError) {
       return res.status(502).json({ error: "paypal_error", message: "PayPal reported an error. Please try again." });
     }
@@ -644,6 +749,13 @@ function createApp(pool) {
 }
 
 async function main() {
+  // Never start in production with the publicly-known dev session secret.
+  if (process.env.NODE_ENV === "production" && !process.env.SESSION_SECRET) {
+    throw new Error("SESSION_SECRET must be set in production (refusing to start with the known dev default).");
+  }
+  if (!process.env.SESSION_SECRET) {
+    console.warn("WARNING: SESSION_SECRET is not set; using an insecure development default. Set SESSION_SECRET before any real deployment.");
+  }
   const pool = createPool();
   await db.initDb(pool);
   const app = createApp(pool);

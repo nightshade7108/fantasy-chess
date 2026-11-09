@@ -565,7 +565,8 @@ async function abandonMatch() {
 async function claimStipend() {
   try {
     const r = await api("/api/stipend/claim", { method: "POST", body: JSON.stringify({}) });
-    toast("King's Stipend claimed — +" + (r.gold != null ? "20" : "") + " gold. Balance: " + r.gold + " gold.");
+    const amount = (S && S.stipend) ? S.stipend.amount : 20;
+    toast("King's Stipend claimed — +" + amount + " gold. Balance: " + r.gold + " gold.");
     await refreshState();
   } catch (e) { showError(e); }
 }
@@ -598,6 +599,13 @@ function wireBattleBoard(m) {
     if (battleSel && battleSel.dests[sq] && !battleSel.enemy) {
       await doBattleMove(battleSel.from, sq, battleSel.dests[sq]);
       return;
+    }
+    // Viewing an enemy piece is read-only: tapping one of its highlighted
+    // capture destinations just deselects. Without this guard an occupied
+    // destination falls through to the enemy-piece branch below and
+    // re-selects the piece instead of deselecting.
+    if (battleSel && battleSel.enemy && battleSel.dests[sq]) {
+      battleSel = null; updateSelectionUI(); return;
     }
     // Click own piece -> select it and show its legal moves (cached: the
     // first selection in a position fetches, later ones do not).
@@ -1047,6 +1055,7 @@ async function buyPack(packId) {
   try {
     const pack = (S.shop.packs || []).find((p) => p.id === packId);
     const r = await api("/api/shop/create-order", { method: "POST", body: JSON.stringify({ packId: packId }) });
+    if (!r.approveUrl) { toast("PayPal did not return an approval link — please try again.", true); return; }
     pendingOrder = { orderId: r.orderId, approveUrl: r.approveUrl, packId: packId, packName: pack ? pack.name : packId, priceLabel: pack ? pack.priceLabel : "" };
     localStorage.setItem("fc_pending_order", JSON.stringify(pendingOrder));
     window.open(r.approveUrl, "_blank", "noopener");
@@ -1062,7 +1071,8 @@ async function verifyOrder() {
     const r = await api("/api/shop/complete-order", { method: "POST", body: JSON.stringify({ orderId: pendingOrder.orderId }) });
     pendingOrder = null;
     localStorage.removeItem("fc_pending_order");
-    toast("Payment verified! +" + r.credited + " gold — new balance: " + r.gold + " gold.");
+    if (r.credited === 0) toast("Already credited — no extra gold added. Balance: " + r.gold + " gold.");
+    else toast("Payment verified! +" + r.credited + " gold — new balance: " + r.gold + " gold.");
     await refreshState();
   } catch (e) {
     if (msg) { msg.textContent = e.message || "Not approved yet."; msg.className = "small error-text"; }
@@ -1136,6 +1146,7 @@ async function startLesson(lessonId) {
       feedback: null, feedbackGood: null, done: false,
     };
     trainingSel = null;
+    trainingMovesCache = null;
     renderTraining();
   } catch (e) { showError(e); }
 }
@@ -1151,12 +1162,12 @@ function renderTrainingSession(el) {
     html += '<div class="feedback ' + (t.feedbackGood ? "good" : "bad") + '">' + esc(t.feedback) + "</div>";
   }
   html += '<div class="match-wrap"><div class="board-col">' +
-    boardHTML(t.board, { playable: !t.done, selectedFrom: trainingSel ? trainingSel.from : null }) +
+    boardHTML(t.board, { playable: !t.done, selectedFrom: trainingSel ? trainingSel.from : null, dests: trainingSel ? trainingSel.dests : {} }) +
     '<p class="small muted" style="text-align:center">Tap one of your ivory heroes, then tap where it should go.</p>' +
     "</div><div class='side-col'>" +
     (t.done
       ? '<div class="banner"><p><strong>Lesson complete!</strong> Well played — Coach Pell is proud.</p></div><p><button class="btn btn-gold" id="training-done">Back to lessons</button></p>'
-      : '<p class="muted">Training is free and never touches your gold or battle record.</p><p><button class="btn btn-ghost" id="training-quit">Leave lesson</button></p>') +
+      : '<div id="training-sel-dialog">' + trainingMovesHTML() + '</div><p class="muted">Training is free and never touches your gold or battle record.</p><p><button class="btn btn-ghost" id="training-quit">Leave lesson</button></p>') +
     "</div></div></div>";
   el.innerHTML = html;
   const done = $("#training-done");
@@ -1170,18 +1181,70 @@ function renderTrainingSession(el) {
       if (!sqEl) return;
       const sq = sqEl.dataset.square;
       const cell = cellAt(t.board, sq);
-      if (trainingSel && trainingSel.from !== sq) {
+      // Click a highlighted destination -> move there.
+      if (trainingSel && trainingSel.dests && trainingSel.dests[sq]) {
         await doTrainingMove(trainingSel.from, sq);
         return;
       }
+      // Click one of your own heroes -> (re-)select it and show its
+      // possible moves. This check comes FIRST: tapping another own piece
+      // while one is selected must re-select, never post a move.
       if (cell && cell.color === "w") {
-        trainingSel = (trainingSel && trainingSel.from === sq) ? null : { from: sq };
-        renderTraining();
+        if (trainingSel && trainingSel.from === sq) { trainingSel = null; renderTraining(); return; }
+        try {
+          const moves = await getTrainingMoves();
+          const own = moves.filter((mv) => mv.from === sq);
+          trainingSel = { from: sq, dests: movesToDests(own, t.board), moves: own };
+          if (!Object.keys(trainingSel.dests).length) toast("That hero has no legal moves right now.", true);
+          renderTraining();
+        } catch (e) { showError(e); }
         return;
       }
       if (trainingSel) { trainingSel = null; renderTraining(); }
     });
   }
+}
+
+/* Legal moves for the current training step, from the server (training
+   steps are server-validated). Cached per session+step: the position only
+   changes when a step advances. */
+let trainingMovesCache = null; // { key, moves }
+async function getTrainingMoves() {
+  const key = training.sessionId + ":" + training.step;
+  if (trainingMovesCache && trainingMovesCache.key === key) return trainingMovesCache.moves;
+  const r = await api("/api/training/moves?sessionId=" + encodeURIComponent(training.sessionId));
+  trainingMovesCache = { key: key, moves: r.moves || [] };
+  return trainingMovesCache.moves;
+}
+
+/* The selected-character dialog for training: the same plain-language
+   list of possible moves as in battle (reusing describeMovesTo), for the
+   hero currently selected on the training board. */
+function trainingMovesHTML() {
+  if (!trainingSel || !training) return "";
+  const t = training;
+  const cell = cellAt(t.board, trainingSel.from);
+  if (!cell) return "";
+  const hero = cell.hero ? heroById(cell.hero) : null;
+  const name = hero ? hero.name : ROLE_LABEL[cell.role];
+  const byDest = {};
+  (trainingSel.moves || []).forEach((mv) => {
+    (byDest[mv.to] = byDest[mv.to] || []).push(mv);
+  });
+  const dests = Object.keys(byDest).sort();
+  let items = "";
+  dests.forEach((to) => {
+    items += "<li>" + esc(describeMovesTo(byDest[to], to, trainingSel.from, t.board)) + "</li>";
+  });
+  if (!dests.length) items = "<li>No legal moves right now.</li>";
+  return '<div class="sel-dialog" role="status" aria-live="polite">' +
+    '<div class="sel-head">' + miniChipHTML({ role: cell.role, color: cell.color, hero: cell.hero }) +
+    "<div><strong>" + esc(name) + "</strong>" +
+    "<br><span class='muted small'>" + esc(ROLE_LABEL[cell.role]) +
+    (hero ? " · " + esc(RARITY_LABEL[hero.rarity]) : "") + " · " + esc(trainingSel.from) + "</span></div></div>" +
+    (hero ? '<p class="sel-ability">✦ ' + esc(hero.ability) + "</p>" : "") +
+    "<p><strong>Possible moves (" + dests.length + "):</strong></p>" +
+    '<ul class="sel-moves">' + items + "</ul></div>";
 }
 
 async function doTrainingMove(from, to) {
@@ -1206,6 +1269,7 @@ async function doTrainingMove(from, to) {
     } else if (r.correct && r.instruction) {
       t.step = r.step; t.stepsTotal = r.stepsTotal; t.instruction = r.instruction;
     }
+    if (r.correct) trainingMovesCache = null; // step advanced: new position
     renderTraining();
   } catch (e) { showError(e); }
 }

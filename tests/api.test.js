@@ -42,7 +42,7 @@ const post = (p, body) => req(p, { method: "POST", body: JSON.stringify(body || 
 
 // --- Mock PayPal ---------------------------------------------------------
 // Simulates the PayPal REST API. `scenario` is swapped per test.
-const paypalScenario = { captureAmount: "0.99", orderStatus: "APPROVED" };
+const paypalScenario = { captureAmount: "0.99", orderStatus: "APPROVED", captureId: "CAP-1", noApproveLink: false };
 const realFetch = global.fetch;
 global.fetch = async (url, opts = {}) => {
   const u = String(url);
@@ -52,10 +52,11 @@ global.fetch = async (url, opts = {}) => {
     return json({ access_token: "tok", token_type: "Bearer", expires_in: 3600 });
   }
   if (u.includes("/v2/checkout/orders") && opts.method === "POST" && !u.includes("/capture")) {
+    try { paypalScenario.lastCreatePayload = JSON.parse(opts.body || "{}"); } catch { paypalScenario.lastCreatePayload = null; }
     return json({
       id: "ORDER-1",
       status: "CREATED",
-      links: [{ rel: "approve", href: "https://www.sandbox.paypal.com/checkoutnow?token=ORDER-1" }],
+      links: paypalScenario.noApproveLink ? [] : [{ rel: "approve", href: "https://www.sandbox.paypal.com/checkoutnow?token=ORDER-1" }],
       purchase_units: [{ custom_id: "pouch", amount: { currency_code: "USD", value: "0.99" } }],
     });
   }
@@ -63,7 +64,7 @@ global.fetch = async (url, opts = {}) => {
     return json({
       id: "ORDER-1",
       status: "COMPLETED",
-      purchase_units: [{ custom_id: "pouch", payments: { captures: [{ id: "CAP-1", status: "COMPLETED", amount: { currency_code: "USD", value: paypalScenario.captureAmount } }] } }],
+      purchase_units: [{ custom_id: "pouch", payments: { captures: [{ id: paypalScenario.captureId, status: "COMPLETED", amount: { currency_code: "USD", value: paypalScenario.captureAmount } }] } }],
     });
   }
   if (u.includes("/v2/checkout/orders/ORDER-1")) {
@@ -73,7 +74,7 @@ global.fetch = async (url, opts = {}) => {
     return json({
       id: "ORDER-1",
       status: paypalScenario.orderStatus,
-      purchase_units: [{ custom_id: "pouch", payments: { captures: [{ id: "CAP-1", status: "COMPLETED", amount: { currency_code: "USD", value: paypalScenario.captureAmount } }] } }],
+      purchase_units: [{ custom_id: "pouch", payments: { captures: [{ id: paypalScenario.captureId, status: "COMPLETED", amount: { currency_code: "USD", value: paypalScenario.captureAmount } }] } }],
     });
   }
   throw new Error("unexpected PayPal URL " + u);
@@ -648,4 +649,284 @@ test("training: castle flag and promotion default are honoured", async () => {
   assert.equal(s2.body.done, true);
   // Restore starters so later tests see the default team.
   await pool.query("UPDATE players SET equipped = $2 WHERE id = $1", [pid, JSON.stringify(STARTERS)]);
+});
+
+// ---- Final debug run: regression tests for the consolidated bug list ----
+
+const http = require("node:http");
+
+// A second, independent client with its own cookie jar (fresh profile).
+function makeClient() {
+  let jar = "";
+  const call = async (path, opts = {}) => {
+    const headers = { "content-type": "application/json", ...(opts.headers || {}) };
+    if (jar) headers.cookie = jar;
+    const r = await fetch(base + path, { ...opts, headers });
+    const set = r.headers.get("set-cookie");
+    if (set) jar = set.split(";")[0];
+    const body = await r.json().catch(() => ({}));
+    return { status: r.status, body };
+  };
+  return {
+    get: (p) => call(p),
+    post: (p, b) => call(p, { method: "POST", body: JSON.stringify(b || {}) }),
+    playerId: () => jar.split("=")[1].split(".")[0],
+  };
+}
+
+// Raw HTTP (fetch forbids overriding Host/Cookie and cannot send a
+// malformed JSON body as-is).
+function rawRequest({ method = "GET", path, headers = {}, body = null }) {
+  return new Promise((resolve, reject) => {
+    const r = http.request(
+      { host: "127.0.0.1", port: server.address().port, path, method, headers },
+      (res) => {
+        let data = "";
+        res.on("data", (c) => { data += c; });
+        res.on("end", () => {
+          let parsed = {};
+          try { parsed = JSON.parse(data); } catch { /* non-JSON body */ }
+          resolve({ status: res.statusCode, body: parsed, raw: data });
+        });
+      }
+    );
+    r.on("error", reject);
+    if (body !== null) r.write(body);
+    r.end();
+  });
+}
+
+async function insertCraftedMatchFor(pid, state, difficulty = "squire") {
+  await pool.query("DELETE FROM matches WHERE player_id = $1", [pid]);
+  await db.saveMatch(pool, {
+    id: crypto.randomUUID(), playerId: pid, difficulty, status: "active",
+    board: engine.serializeBoard(state), turn: state.turn,
+    castling: state.castling, ep: state.ep, halfmove: state.halfmove,
+    fullmove: state.fullmove, heroesW: state.heroesW, heroesB: state.heroesB,
+    keys: state.keys, history: [], entryFee: 20,
+  });
+}
+
+test("match: 20 parallel starts create exactly one match and charge once", async () => {
+  const c = makeClient();
+  const initial = await c.get("/api/state");
+  assert.equal(initial.body.gold, 100);
+  const results = await Promise.all(
+    Array.from({ length: 20 }, () => c.post("/api/match/start", { difficultyId: "squire" }))
+  );
+  const ok = results.filter((r) => r.status === 200);
+  assert.equal(ok.length, 1, `expected 1 success, got ${ok.length}: ${JSON.stringify(results.map((r) => r.status))}`);
+  assert.ok(results.every((r) => r.status === 200 || (r.status === 409 && r.body.error === "match_active")),
+    "every loser must fail cleanly as 409 match_active");
+  assert.equal(ok[0].body.gold, 80);
+  const state = await c.get("/api/state");
+  assert.equal(state.body.gold, 80);
+  assert.ok(state.body.activeMatch);
+  const rows = await pool.query("SELECT COUNT(*) AS n FROM matches WHERE player_id = $1 AND status = 'active'", [c.playerId()]);
+  assert.equal(Number(rows.rows[0].n), 1);
+  await c.post("/api/match/abandon");
+});
+
+test("match: parallel duplicate moves apply only once", async () => {
+  const c = makeClient();
+  await c.get("/api/state");
+  const started = await c.post("/api/match/start", { difficultyId: "squire" });
+  assert.equal(started.status, 200);
+  const moves = await c.get("/api/match/moves");
+  const m = moves.body.moves[0];
+  const [a, b] = await Promise.all([
+    c.post("/api/match/move", { from: m.from, to: m.to, promotion: m.promotion || undefined }),
+    c.post("/api/match/move", { from: m.from, to: m.to, promotion: m.promotion || undefined }),
+  ]);
+  const ok = [a, b].filter((r) => r.status === 200);
+  assert.equal(ok.length, 1, `expected 1 success, got ${ok.length}: ${JSON.stringify([a, b].map((r) => r.status))}`);
+  assert.ok([a, b].every((r) => [200, 400, 409].includes(r.status)), "the loser fails cleanly (400/409)");
+  const state = await c.get("/api/state");
+  assert.ok(state.body.activeMatch, "the match is still active after one applied move");
+  assert.equal(state.body.activeMatch.history.length, 2, "exactly one player move + one AI reply in history");
+  assert.equal(state.body.gamesPlayed, 0);
+  await c.post("/api/match/abandon");
+});
+
+test("match: parallel mating moves settle exactly once", async () => {
+  const c = makeClient();
+  await c.get("/api/state");
+  const pid = c.playerId();
+  await pool.query("UPDATE players SET gold = 10000 WHERE id = $1", [pid]);
+  // Mate in one: witch f7-g7, protected by the warlord on g6.
+  const mate = crafted([
+    ["warlord", "w", "g6"], ["witch", "w", "f7"], ["warlord", "b", "h8"],
+  ]);
+  await insertCraftedMatchFor(pid, mate);
+  const [a, b] = await Promise.all([
+    c.post("/api/match/move", { from: "f7", to: "g7" }),
+    c.post("/api/match/move", { from: "f7", to: "g7" }),
+  ]);
+  const ok = [a, b].filter((r) => r.status === 200);
+  assert.equal(ok.length, 1, `expected 1 success, got ${ok.length}: ${JSON.stringify([a, b].map((r) => r.status))}`);
+  assert.equal(ok[0].body.gameOver, true);
+  assert.equal(ok[0].body.settlement.result, "win");
+  assert.equal(ok[0].body.settlement.goldAwarded, 75);
+  const state = await c.get("/api/state");
+  assert.equal(state.body.record, "1-0-0");
+  assert.equal(state.body.gamesPlayed, 1);
+  assert.equal(state.body.gold, 10000 + 75);
+  assert.equal(state.body.activeMatch, null);
+});
+
+test("match: malformed square strings are rejected (bad_move)", async () => {
+  const c = makeClient();
+  await c.get("/api/state");
+  const started = await c.post("/api/match/start", { difficultyId: "squire" });
+  assert.equal(started.status, 200);
+  // "e2e4" used to silently parse as "e2" and play that move.
+  const bad = await c.post("/api/match/move", { from: "e2e4", to: "e4" });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.body.error, "bad_move");
+  const bad2 = await c.post("/api/match/move", { from: "e2", to: "e9" });
+  assert.equal(bad2.status, 400);
+  assert.equal(bad2.body.error, "bad_move");
+  await c.post("/api/match/abandon");
+});
+
+test("cookies: malformed fc_player cookie does not 500", async () => {
+  const bad = await rawRequest({ path: "/api/state", headers: { cookie: "fc_player=%E0%A4%A" } });
+  assert.equal(bad.status, 200);
+  assert.equal(bad.body.gold, 100); // undecodable value -> fresh profile
+  const bad2 = await rawRequest({ path: "/api/state", headers: { cookie: "fc_player=%FF%FF" } });
+  assert.equal(bad2.status, 200);
+  assert.equal(bad2.body.gold, 100);
+});
+
+test("errors: malformed JSON returns bad_json, not server_error", async () => {
+  const res = await rawRequest({
+    method: "POST", path: "/api/match/start",
+    headers: { "content-type": "application/json", cookie },
+    body: "{not json",
+  });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, "bad_json");
+});
+
+test("training: moves endpoint lists the lesson's legal moves", async () => {
+  const start = await post("/api/training/start", { lessonId: 1 });
+  assert.equal(start.status, 200);
+  const moves = await get(`/api/training/moves?sessionId=${start.body.sessionId}`);
+  assert.equal(moves.status, 200);
+  assert.ok(moves.body.moves.length > 0);
+  assert.ok(moves.body.moves.some((m) => m.from === "a1" && m.to === "a4"), "a1-a4 is listed");
+  assert.ok(moves.body.moves.every((m) => typeof m.san === "string" && m.san.length > 0));
+  // Unknown session -> empty list, not an error.
+  const gone = await get("/api/training/moves?sessionId=nope");
+  assert.equal(gone.status, 200);
+  assert.deepEqual(gone.body.moves, []);
+});
+
+test("stipend: banner uses the database's today", async () => {
+  const playerId = cookie.split("=")[1].split(".")[0];
+  // Banner agrees with the DB date: a claim recorded today (by the DB's
+  // clock) shows as claimed, and the stipend cannot be claimed again.
+  await pool.query("UPDATE players SET gold = 10, last_stipend_date = CURRENT_DATE WHERE id = $1", [playerId]);
+  const state = await get("/api/state");
+  assert.equal(state.body.stipend.claimedToday, true);
+  assert.equal(state.body.stipend.canClaim, false);
+  // Date gate: a claim recorded yesterday does not block today...
+  await pool.query("UPDATE players SET gold = 10, last_stipend_date = CURRENT_DATE - 1 WHERE id = $1", [playerId]);
+  const ok = await post("/api/stipend/claim");
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.gold, 30);
+  // ...but a claim recorded for a later date does block (the gate is the
+  // date, not just the gold balance).
+  await pool.query("UPDATE players SET gold = 10, last_stipend_date = CURRENT_DATE + 1 WHERE id = $1", [playerId]);
+  const blocked = await post("/api/stipend/claim");
+  assert.equal(blocked.status, 400);
+  assert.equal(blocked.body.error, "stipend_unavailable");
+  await pool.query("UPDATE players SET gold = 100, last_stipend_date = NULL WHERE id = $1", [playerId]);
+});
+
+test("shop: owner token gate is constant-time and setup-disabled is 409 on both endpoints", async () => {
+  const saved = process.env.OWNER_SETUP_TOKEN;
+  try {
+    delete process.env.OWNER_SETUP_TOKEN;
+    const cfg = await post("/api/shop/config", { clientId: "x", secret: "y", env: "sandbox", ownerToken: "owner-test-token" });
+    assert.equal(cfg.status, 409);
+    assert.equal(cfg.body.error, "setup_disabled");
+    const rm = await post("/api/shop/remove-config", { ownerToken: "owner-test-token" });
+    assert.equal(rm.status, 409);
+    assert.equal(rm.body.error, "setup_disabled");
+  } finally {
+    process.env.OWNER_SETUP_TOKEN = saved;
+  }
+  // With the token set again, a wrong token is still 403 (not 409).
+  const bad = await post("/api/shop/config", { clientId: "x", secret: "y", env: "sandbox", ownerToken: "nope" });
+  assert.equal(bad.status, 403);
+  assert.equal(bad.body.error, "bad_owner_token");
+});
+
+test("shop: create-order uses PUBLIC_URL and never a poisoned Host", async () => {
+  const saved = process.env.PUBLIC_URL;
+  try {
+    process.env.PUBLIC_URL = "https://example.com/";
+    const created = await post("/api/shop/create-order", { packId: "pouch" });
+    assert.equal(created.status, 200);
+    assert.equal(paypalScenario.lastCreatePayload.application_context.return_url, "https://example.com/?shop=return");
+    assert.equal(paypalScenario.lastCreatePayload.application_context.cancel_url, "https://example.com/?shop=cancel");
+  } finally {
+    if (saved === undefined) delete process.env.PUBLIC_URL;
+    else process.env.PUBLIC_URL = saved;
+  }
+  // No PUBLIC_URL and a poisoned Host header: the PayPal redirect must
+  // NOT go to the attacker's domain.
+  const evil = await rawRequest({
+    method: "POST", path: "/api/shop/create-order",
+    headers: { "content-type": "application/json", cookie, host: "evil.example" },
+    body: JSON.stringify({ packId: "pouch" }),
+  });
+  assert.equal(evil.status, 200);
+  assert.ok(!paypalScenario.lastCreatePayload.application_context.return_url.includes("evil.example"));
+  assert.equal(paypalScenario.lastCreatePayload.application_context.return_url, "https://fantasy-chess.onrender.com/?shop=return");
+});
+
+test("shop: create-order without an approve link is a 502", async () => {
+  paypalScenario.noApproveLink = true;
+  try {
+    const created = await post("/api/shop/create-order", { packId: "pouch" });
+    assert.equal(created.status, 502);
+    assert.equal(created.body.error, "paypal_error");
+  } finally {
+    paypalScenario.noApproveLink = false;
+  }
+});
+
+test("shop: parallel duplicate verifies credit exactly once", async () => {
+  const c = makeClient();
+  await c.get("/api/state");
+  paypalScenario.captureId = "CAP-CONCURRENT";
+  try {
+    const before = (await c.get("/api/state")).body.gold;
+    const [a, b] = await Promise.all([
+      c.post("/api/shop/complete-order", { orderId: "ORDER-1" }),
+      c.post("/api/shop/complete-order", { orderId: "ORDER-1" }),
+    ]);
+    assert.equal(a.status, 200);
+    assert.equal(b.status, 200);
+    assert.deepEqual([a.body.credited, b.body.credited].sort(), [0, 50]);
+    const after = (await c.get("/api/state")).body.gold;
+    assert.equal(after, before + 50);
+  } finally {
+    paypalScenario.captureId = "CAP-1";
+  }
+});
+
+test("shop: Best value badge is on the Vault, not the Satchel", async () => {
+  const { body } = await get("/api/state");
+  const packs = Object.fromEntries(body.shop.packs.map((p) => [p.id, p]));
+  assert.equal(packs.vault.badge, "Best value");
+  assert.equal(packs.satchel.badge, null);
+  // Pack gold amounts and prices are unchanged.
+  assert.equal(packs.pouch.gold, 50);
+  assert.equal(packs.satchel.gold, 165);
+  assert.equal(packs.chest.gold, 335);
+  assert.equal(packs.vault.gold, 835);
+  assert.equal(packs.vault.priceCents, 999);
 });

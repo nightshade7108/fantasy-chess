@@ -1,17 +1,20 @@
 # Render blueprint for Fantasy Chess.
 # Deploy: push this repo to GitHub, then in Render choose "New → Blueprint"
 # and point it at the repo. Render creates the web service + Postgres below.
-# Cost: web 0.5c-512mb ($7/mo) + Postgres 0.1c-256mb ($6/mo) + 1 GB disk
-# ($0.30/mo) = ~$13.30/mo. (Render retired the old "starter" Postgres plan
-# in April 2026; the new plan IDs are 0.5c-512mb / 0.1c-256mb. Disk is billed
-# separately at $0.30/GB/mo and can only grow, so start at 1 GB.)
-# The Free database deletes itself after 30 days — test-only, not for launch.
+# FREE TEST TIER ($0): web plan "free" sleeps after 15 min idle (slow first
+# load) and the free Postgres deletes itself after 30 days with 1 GB fixed
+# storage. Good for testing only — not a launch.
+# PAID LAUNCH (switch these two plans back when ready): web 0.5c-512mb
+# ($7/mo) + Postgres 0.1c-256mb ($6/mo) + diskSizeGB 1 ($0.30/mo) = ~$13.30/mo.
+# (Render retired the old "starter" Postgres plan in April 2026; the new plan
+# IDs are 0.5c-512mb / 0.1c-256mb. Disk is billed separately at $0.30/GB/mo
+# and can only grow, so start paid at 1 GB.)
 
 services:
   - type: web
     name: fantasy-chess
     runtime: node
-    plan: 0.5c-512mb
+    plan: free
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /healthz
@@ -38,5 +41,4 @@ services:
 
 databases:
   - name: fantasy-chess-db
-    plan: 0.1c-256mb
-    diskSizeGB: 1
+    plan: free

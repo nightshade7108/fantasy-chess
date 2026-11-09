@@ -29,6 +29,20 @@ const ICONS = {
 };
 const icon = (role) => ICONS[role] || ICONS.soldier;
 
+/* Filled role silhouettes for the die-cut piece tokens: the token IS the
+   symbol shape (shield / bow / wand / sword / crescent moon / crown),
+   filled with the side colour and outlined in the hero's rarity colour.
+   `.sil` is the main shape, `.det` a lighter inner detail. */
+const SILHOUETTES = {
+  soldier: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M12 1.8 L19.2 4.8 V11 C19.2 16.2 15.6 20.6 12 22.2 C8.4 20.6 4.8 16.2 4.8 11 V4.8 Z"/><path class="det" d="M12 6.6 L15.1 9 V12.3 L12 14.5 L8.9 12.3 V9 Z"/></svg>',
+  archer: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M8 1 C15 4.5 15 19.5 8 23 C10.2 19.5 10.2 4.5 8 1 Z"/><path class="sil" d="M7.5 11.3 L19.5 11.3 L19.5 12.7 L7.5 12.7 Z"/><path class="sil" d="M19 9.4 L23 12 L19 14.6 Z"/><path class="sil" d="M7.5 9.6 L10.2 12 L7.5 14.4 Z"/></svg>',
+  wizard: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M4.6 21.6 L14.6 5.4 L17.1 7.4 L7.1 22.6 Z"/><path class="sil" d="M17.6 1.4 L18.4 4.1 L21.1 4.9 L18.4 5.7 L17.6 8.4 L16.8 5.7 L14.1 4.9 L16.8 4.1 Z"/><path class="sil" d="M20.2 9.4 L20.7 10.8 L22.1 11.3 L20.7 11.8 L20.2 13.2 L19.7 11.8 L18.3 11.3 L19.7 10.8 Z"/></svg>',
+  knight: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M12 1 L14.3 3.3 L13.5 12.5 L10.5 12.5 L9.7 3.3 Z M5.5 13.5 L18.5 13.5 L18.5 16 L5.5 16 Z M10.8 16.8 L13.2 16.8 L13.2 20.4 L10.8 20.4 Z M12 20.6 m-1.7 0 a1.7 1.7 0 1 0 3.4 0 a1.7 1.7 0 1 0 -3.4 0"/></svg>',
+  witch: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M20.8 13.8 A8.8 8.8 0 1 1 10.2 3.6 A7.2 7.2 0 0 0 20.8 13.8 Z"/><path class="sil" d="M17 3.4 L17.5 5.2 L19.3 5.7 L17.5 6.2 L17 8 L16.5 6.2 L14.7 5.7 L16.5 5.2 Z"/></svg>',
+  warlord: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sil" d="M3 17.5 L2 6.5 L7.5 10.5 L12 3.5 L16.5 10.5 L22 6.5 L21 17.5 Z M4 19 L20 19 L20 21.6 L4 21.6 Z"/><path class="det" d="M12 11.2 m-1.6 0 a1.6 1.6 0 1 0 3.2 0 a1.6 1.6 0 1 0 -3.2 0"/></svg>',
+};
+const silhouette = (role) => SILHOUETTES[role] || SILHOUETTES.soldier;
+
 /* ---------------- state ---------------- */
 let S = null;               // GET /api/state payload
 let currentTab = "battle";
@@ -113,7 +127,8 @@ function boardHTML(board, opts) {
   const selFrom = opts.selectedFrom || null;
   const dests = opts.dests || {}; // to-square -> "move" | "capture"
   const checkSq = opts.checkSquare || null;
-  let html = '<div class="board" role="grid" aria-label="Chess board">';
+  const theme = opts.theme || "arena-squire"; // per-difficulty arena
+  let html = '<div class="board ' + theme + '" role="grid" aria-label="Chess board">';
   for (let r = 7; r >= 0; r--) {
     for (let f = 0; f < 8; f++) {
       const sq = sqName(r, f);
@@ -138,21 +153,22 @@ function heroById(id) {
   return (S && S.catalog) ? S.catalog.find((h) => h.id === id) || null : null;
 }
 
-/* Glossy beveled game chip: pink = player (White), violet = enemy (Black),
-   rarity-coloured trim, gold rim on warlords. */
+/* Die-cut piece token: the token IS the role symbol, filled with the side
+   colour (pink = player, violet = enemy), outlined in rarity colour,
+   gold rim on warlords. */
 function chipHTML(cell) {
   const hero = heroById(cell.hero);
   const rarity = hero ? hero.rarity : "common";
   const cls = "chip " + cell.color + (cell.role === "warlord" ? " warlord" : "");
   return '<span class="' + cls + '" style="--rarity-color: var(--rarity-' + rarity + ')" title="' +
-    esc(hero ? hero.name : ROLE_LABEL[cell.role]) + '">' + icon(cell.role) + "</span>";
+    esc(hero ? hero.name : ROLE_LABEL[cell.role]) + '">' + silhouette(cell.role) + "</span>";
 }
 
 function miniChipHTML(cell) {
   const hero = heroById(cell.hero);
   const rarity = hero ? hero.rarity : "common";
   const cls = "chip mini " + cell.color + (cell.role === "warlord" ? " warlord" : "");
-  return '<span class="' + cls + '" style="--rarity-color: var(--rarity-' + rarity + ')">' + icon(cell.role) + "</span>";
+  return '<span class="' + cls + '" style="--rarity-color: var(--rarity-' + rarity + ')">' + silhouette(cell.role) + "</span>";
 }
 
 /* Captured pieces, derived from the board vs the standard 16-piece start.
@@ -203,7 +219,9 @@ function pickPromotion() {
       "<p>Your soldier reached the far rank. Choose what it becomes:</p>" +
       '<div class="promo-grid">' +
       PROMO_ROLES.map((r) =>
-        '<button class="promo-btn" data-role="' + r + '">' + icon(r) + esc(ROLE_LABEL[r]) + "</button>").join("") +
+        '<button class="promo-btn" data-role="' + r + '">' +
+        '<span class="chip w" style="--rarity-color: var(--rarity-common)">' + silhouette(r) + "</span>" +
+        esc(ROLE_LABEL[r]) + "</button>").join("") +
       "</div>" +
       '<div class="modal-actions"><button class="btn btn-ghost" data-cancel>Cancel</button></div>' +
       "</div></div>";
@@ -265,7 +283,7 @@ function statCard(num, label) {
 
 function diffCardHTML(d) {
   const afford = S.gold >= d.cost;
-  return '<div class="diff-card">' +
+  return '<div class="diff-card arena-' + esc(d.id) + '">' +
     "<h3>" + esc(d.name) + "</h3>" +
     '<div class="opp">' + esc(d.opponent) + '</div><div class="small muted">' + esc(d.opponentTitle || "") + "</div>" +
     '<div class="blurb">' + esc(d.blurb || "") + "</div>" +
@@ -280,15 +298,16 @@ function matchHTML(m, diff) {
   const caps = capturedPieces(m.board);
   const enemyHeroes = diff ? diff.enemyBand : {};
   const checkSq = m.check ? findWarlordSquare(m.board, m.turn) : null;
+  const arena = "arena-" + (diff ? diff.id : "squire");
   const turnText = m.status !== "active"
     ? "Battle over"
     : m.turn === "w" ? "Your move — tap one of your pink heroes" : "The enemy is thinking…";
-  return '<div class="panel"><h2>' + esc(diff ? diff.name : "Battle") +
+  return '<div class="panel ' + arena + '"><h2>' + esc(diff ? diff.name : "Battle") +
     ' <span class="small muted">vs ' + esc(diff ? diff.opponent : "") + "</span></h2>" +
     '<p class="turn-line">' + esc(turnText) + " " +
     (m.check && m.status === "active" ? '<span class="check-flag">CHECK!</span>' : "") + "</p>" +
     '<div class="match-wrap"><div class="board-col">' +
-    boardHTML(m.board, { playable: m.status === "active" && m.turn === "w", selectedFrom: battleSel ? battleSel.from : null, dests: battleSel ? battleSel.dests : {}, checkSquare: checkSq }) +
+    boardHTML(m.board, { playable: m.status === "active" && m.turn === "w", selectedFrom: battleSel ? battleSel.from : null, dests: battleSel ? battleSel.dests : {}, checkSquare: checkSq, theme: arena }) +
     '<p class="small muted" style="text-align:center">You are White (pink), at the bottom. The enemy is violet, at the top.</p>' +
     "</div>" +
     '<div class="side-col">' +

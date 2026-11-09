@@ -209,8 +209,8 @@ main { max-width: 1080px; margin: 0 auto; padding: 1.4rem 1.25rem; }
 .board-col { flex: 1 1 380px; min-width: 300px; }
 .side-col { flex: 1 1 260px; min-width: 240px; }
 .board {
-  display: grid; grid-template-columns: repeat(8, 1fr);
-  width: 100%; max-width: 560px; aspect-ratio: 1;
+  display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
+  width: 100%; max-width: 560px; aspect-ratio: 1 / 1; box-sizing: border-box;
   border: 6px solid transparent;
   background:
     linear-gradient(#fff, #fff) padding-box,
@@ -221,7 +221,7 @@ main { max-width: 1080px; margin: 0 auto; padding: 1.4rem 1.25rem; }
 }
 .sq {
   position: relative; display: flex; align-items: center; justify-content: center;
-  cursor: default; padding: 4%;
+  cursor: default; padding: 0; min-width: 0; min-height: 0;
 }
 .sq.light { background: linear-gradient(145deg, #eefad6, #d6f2ab); }
 .sq.dark { background: linear-gradient(145deg, #86c95a, #63a83c); }
@@ -249,31 +249,100 @@ main { max-width: 1080px; margin: 0 auto; padding: 1.4rem 1.25rem; }
 .sq.in-check { background: linear-gradient(145deg, #fca5a5, #f87171) !important; animation: pulseCheck 1s infinite alternate; }
 @keyframes pulseCheck { from { box-shadow: inset 0 0 0 3px rgba(220,38,38,.4); } to { box-shadow: inset 0 0 0 6px rgba(220,38,38,.8); } }
 
-/* Glossy beveled game chips — pink for the player, violet for the enemy.
-   Rarity-coloured trim, gold rim + glow on warlords, soft rarity glow. */
+/* Die-cut piece tokens: the token IS the role symbol (shield / bow / wand /
+   sword / crescent moon / crown), filled with the side colour — pink for the
+   player, violet for the enemy — outlined in the hero's rarity colour, with
+   a gold rim + glow on warlords. The gradients live in index.html. */
 .chip {
-  width: 90%; aspect-ratio: 1; border-radius: 50%;
+  width: 88%; height: 88%; aspect-ratio: 1; flex: none;
   display: flex; align-items: center; justify-content: center;
   position: relative; z-index: 2;
-  border: 3px solid var(--rarity-color, #9aa3ad);
-  box-shadow:
-    inset 0 4px 7px rgba(255,255,255,.8),
-    inset 0 -6px 9px rgba(0,0,0,.3),
-    0 3px 7px rgba(0,0,0,.4),
-    0 0 10px color-mix(in srgb, var(--rarity-color, #9aa3ad) 55%, transparent);
+  background: none; border: none; box-shadow: none;
 }
-.chip svg { width: 62%; height: 62%; filter: drop-shadow(0 1px 1px rgba(0,0,0,.35)); }
-.chip.w {
-  background: radial-gradient(circle at 32% 26%, #ffe3f1, var(--pink) 55%, var(--pink-deep));
-  color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.3);
+.chip svg {
+  width: 100%; height: 100%; overflow: visible;
+  filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)) drop-shadow(0 0 5px color-mix(in srgb, var(--rarity-color, #9aa3ad) 55%, transparent));
 }
-.chip.b {
-  background: radial-gradient(circle at 32% 26%, #e2d4ff, var(--violet) 55%, var(--violet-deep));
-  color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.3);
+.chip svg .sil { stroke: var(--rarity-color, #9aa3ad); stroke-width: 1; stroke-linejoin: round; stroke-linecap: round; }
+.chip.w svg .sil { fill: url(#grad-chip-pink); }
+.chip.b svg .sil { fill: url(#grad-chip-violet); }
+.chip svg .det { fill: rgba(255,255,255,.34); stroke: none; }
+.chip.warlord svg .sil { stroke: var(--gold); stroke-width: 1.5; }
+.chip.warlord svg { filter: drop-shadow(0 2px 3px rgba(0,0,0,.4)) drop-shadow(0 0 11px rgba(242,183,5,.9)); }
+.chip.mini { width: 34px; height: 34px; flex: none; }
+.promo-btn .chip { width: 48px; height: 48px; flex: none; }
+/* Dark arenas get a thicker rarity outline so the cutouts stay readable. */
+.board.arena-dragon .chip svg .sil,
+.board.arena-celestial .chip svg .sil { stroke-width: 1.4; }
+
+/* ---------- arenas: one distinct battlefield per difficulty ----------
+   The base board above IS the Squire's Trial meadow. Each arena below
+   re-themes the frame, tiles, coordinates and glow; the match panel gets a
+   light tint and the difficulty card a matching accent, so the arena reads
+   from the level-select screen all the way through the battle. Selected,
+   destination and check highlights stay gold/red on every arena. */
+
+/* Knight's Campaign — Border Fort: cool steel and dawn sky. */
+.board.arena-knight {
+  background: linear-gradient(#fff, #fff) padding-box,
+    linear-gradient(135deg, #dbeafe, #3b82f6 30%, #1e3a5f 60%, #93c5fd) border-box;
+  box-shadow: 0 0 0 3px #dbeafe, 0 12px 32px rgba(30, 58, 95, .4), 0 0 24px rgba(59, 130, 246, .35);
 }
-.chip.warlord { border-color: var(--gold); box-shadow: inset 0 4px 7px rgba(255,255,255,.8), inset 0 -6px 9px rgba(0,0,0,.3), 0 3px 7px rgba(0,0,0,.4), 0 0 0 2px var(--gold-deep), 0 0 16px rgba(242,183,5,.85); }
-.chip.mini { width: 34px; height: 34px; border-width: 2px; flex: none; }
-.chip.mini svg { width: 60%; height: 60%; }
+.board.arena-knight .sq.light { background: linear-gradient(145deg, #eef2f8, #d3dcea); }
+.board.arena-knight .sq.dark { background: linear-gradient(145deg, #7e96b8, #5a7190); }
+.board.arena-knight .sq.light .coord { color: rgba(51, 65, 85, .8); }
+.board.arena-knight .sq.dark .coord { color: rgba(255, 255, 255, .92); text-shadow: 0 1px 2px rgba(0,0,0,.4); }
+.panel.arena-knight { background: #f2f6fc; border-color: #93c5fd; }
+.diff-card.arena-knight { border-color: #93c5fd; }
+.diff-card.arena-knight::before { background: linear-gradient(90deg, #bfdbfe, #3b82f6, #1e3a5f); }
+
+/* Warlord's Gambit — War Banners: warm sandstone and crimson. */
+.board.arena-warlord {
+  background: linear-gradient(#fff, #fff) padding-box,
+    linear-gradient(135deg, #fde68a, #dc2626 30%, #7f1d1d 60%, #f59e0b) border-box;
+  box-shadow: 0 0 0 3px #fde68a, 0 12px 32px rgba(127, 29, 29, .4), 0 0 24px rgba(220, 38, 38, .3);
+}
+.board.arena-warlord .sq.light { background: linear-gradient(145deg, #fdf0d5, #f3ddae); }
+.board.arena-warlord .sq.dark { background: linear-gradient(145deg, #c98a5a, #a85f36); }
+.board.arena-warlord .sq.light .coord { color: rgba(120, 53, 15, .8); }
+.board.arena-warlord .sq.dark .coord { color: rgba(255, 255, 255, .92); text-shadow: 0 1px 2px rgba(0,0,0,.4); }
+.panel.arena-warlord { background: #fdf3e3; border-color: #f59e0b; }
+.diff-card.arena-warlord { border-color: #f59e0b; }
+.diff-card.arena-warlord::before { background: linear-gradient(90deg, #fde68a, #dc2626, #7f1d1d); }
+
+/* Dragonlord's Throne — Ember Throne: volcanic obsidian and ember. */
+.board.arena-dragon {
+  background: linear-gradient(#fff, #fff) padding-box,
+    linear-gradient(135deg, #fcd34d, #f97316 30%, #431407 60%, #fbbf24) border-box;
+  box-shadow: 0 0 0 3px #fde68a, 0 12px 32px rgba(67, 20, 7, .5), 0 0 24px rgba(249, 115, 22, .45);
+}
+.board.arena-dragon .sq.light { background: linear-gradient(145deg, #f6e3c2, #e8c99a); }
+.board.arena-dragon .sq.dark { background: linear-gradient(145deg, #4a3a32, #2e211b); }
+.board.arena-dragon .sq.light .coord { color: rgba(69, 26, 3, .8); }
+.board.arena-dragon .sq.dark .coord { color: #fde68a; text-shadow: 0 1px 2px rgba(0,0,0,.5); }
+.panel.arena-dragon { background: #faf0e2; border-color: #f59e0b; }
+.diff-card.arena-dragon { border-color: #f59e0b; }
+.diff-card.arena-dragon::before { background: linear-gradient(90deg, #fcd34d, #f97316, #431407); }
+
+/* Celestial Throne — Umbral Sky: midnight indigo, starlight and gold. */
+.board.arena-celestial {
+  background: linear-gradient(#fff, #fff) padding-box,
+    linear-gradient(135deg, #c4b5fd, #7c3aed 30%, #1e1b4b 60%, #f2b705) border-box;
+  box-shadow: 0 0 0 3px #ede9fe, 0 12px 32px rgba(30, 27, 75, .5), 0 0 24px rgba(124, 58, 237, .45);
+}
+.board.arena-celestial .sq.light { background: linear-gradient(145deg, #e9e4f9, #cfc6f2); }
+.board.arena-celestial .sq.dark {
+  background:
+    radial-gradient(circle at 22% 28%, rgba(255,255,255,.55) 1px, transparent 1.7px),
+    radial-gradient(circle at 72% 64%, rgba(255,255,255,.45) 1px, transparent 1.7px),
+    radial-gradient(circle at 48% 82%, rgba(255,255,255,.35) 1px, transparent 1.5px),
+    linear-gradient(145deg, #3d3a70, #232052);
+}
+.board.arena-celestial .sq.light .coord { color: rgba(46, 33, 80, .75); }
+.board.arena-celestial .sq.dark .coord { color: #e9e4ff; text-shadow: 0 1px 2px rgba(0,0,0,.5); }
+.panel.arena-celestial { background: #f1eefc; border-color: #a78bfa; }
+.diff-card.arena-celestial { border-color: #a78bfa; }
+.diff-card.arena-celestial::before { background: linear-gradient(90deg, #c4b5fd, #7c3aed, #1e1b4b); }
 .captured-row { display: flex; flex-wrap: wrap; gap: .3rem; min-height: 38px; align-items: center; }
 .captured-row .cap-label { font-size: .85rem; color: var(--muted); font-weight: 800; margin-right: .2rem; }
 .history-box {
@@ -482,7 +551,6 @@ main { max-width: 1080px; margin: 0 auto; padding: 1.4rem 1.25rem; }
   box-shadow: 0 3px 0 var(--lavender-200); transition: transform .1s ease, border-color .15s ease;
 }
 .promo-btn:hover { border-color: var(--gold); background: #fffbe6; transform: translateY(-2px); }
-.promo-btn svg { width: 46px; height: 46px; color: var(--lavender-700); }
 .modal-actions { display: flex; gap: .6rem; justify-content: flex-end; flex-wrap: wrap; margin-top: .9rem; }
 
 @media (max-width: 640px) {

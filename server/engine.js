@@ -588,6 +588,20 @@ function legalMoves(state) {
   return legal;
 }
 
+// Legal moves for one side from the current position, even when it is not
+// that side's turn — read-only inspection (e.g. viewing an enemy hero's
+// possible moves). The en-passant right belongs to the side to move (it
+// was created by the other side's double march), so the inspected side has
+// no ep capture; clearing the square also keeps its diagStep moves onto
+// that (empty) square from being wrongly suppressed.
+function legalMovesFor(state, color) {
+  if (color === state.turn) return legalMoves(state);
+  const probe = structuredClone(state);
+  probe.turn = color;
+  probe.ep = null;
+  return legalMoves(probe);
+}
+
 function sanFor(state, move) {
   if (move.castle === "K") return "O-O";
   if (move.castle === "Q") return "O-O-O";
@@ -658,7 +672,7 @@ function deserializeBoard(ranks, heroesW, heroesB) {
 module.exports = {
   ...module.exports,
   isSquareAttacked, isCheck, genCastling, doMove, undoMove, applyMove,
-  legalMoves, legalMovesFast, sanFor,
+  legalMoves, legalMovesFast, legalMovesFor, sanFor,
   insufficientMaterial, gameStatus, serializeBoard, deserializeBoard,
   pieceAttacksSquare,
 };

@@ -92,6 +92,16 @@ function engineStateToRow(state) {
   };
 }
 
+// A legal move as the client needs it: squares, promotion/castle flags,
+// and the SAN (whose "x" marks captures — en passant lands on an empty
+// square, so the board alone cannot tell it from a quiet move).
+function serializeMove(m) {
+  return {
+    from: engine.toAlgebraic(m.from), to: engine.toAlgebraic(m.to),
+    promotion: m.promotion, castle: m.castle, san: m.san,
+  };
+}
+
 function serializeMatch(row) {
   if (!row) return null;
   const state = rowToEngineState(row);
@@ -333,17 +343,21 @@ function createApp(pool) {
     return { result, goldAwarded, card: card ? publicHero(card) : null, gold };
   }
 
+  // Read-only inspection: ?color=w|b returns that side's legal moves from
+  // the current position regardless of whose turn it is (viewing an enemy
+  // hero's possible moves). Without it, the player's own moves, only while
+  // it is their turn. This never enables a move: /api/match/move still
+  // only accepts the side-to-move's pieces.
   app.get("/api/match/moves", async (req, res, next) => {
     try {
       const row = await db.getActiveMatch(pool, req.player.id);
       if (!row) return res.json({ moves: [] });
       const state = rowToEngineState(row);
-      if (state.turn !== "w") return res.json({ moves: [] });
-      const moves = engine.legalMoves(state).map((m) => ({
-        from: engine.toAlgebraic(m.from), to: engine.toAlgebraic(m.to),
-        promotion: m.promotion, castle: m.castle, san: m.san,
-      }));
-      res.json({ moves });
+      const color = req.query.color;
+      const moves = (color === "w" || color === "b")
+        ? engine.legalMovesFor(state, color)
+        : (state.turn === "w" ? engine.legalMoves(state) : []);
+      res.json({ moves: moves.map(serializeMove) });
     } catch (e) { next(e); }
   });
 

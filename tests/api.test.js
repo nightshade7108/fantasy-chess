@@ -343,6 +343,32 @@ test("match: illegal moves are rejected (incl. bishop-like soldier)", async () =
   await post("/api/match/abandon");
 });
 
+test("match: /api/match/moves?color=b shows the enemy's moves, view-only", async () => {
+  const state = engine.createGame({ ...STARTERS }, { ...STARTERS });
+  await insertCraftedMatch(state);
+  // The enemy's legal moves from the start, straight from the engine.
+  const expected = engine.legalMovesFor(state, "b");
+  const key = (from, to, promotion, castle) => from + ">" + to + (promotion || "") + (castle || "");
+  const expectedKeys = expected.map((m) => key(engine.toAlgebraic(m.from), engine.toAlgebraic(m.to), m.promotion, m.castle)).sort();
+  const enemy = await get("/api/match/moves?color=b");
+  assert.equal(enemy.status, 200);
+  assert.ok(expected.length > 20);
+  assert.equal(enemy.body.moves.length, expected.length);
+  assert.deepEqual(enemy.body.moves.map((m) => key(m.from, m.to, m.promotion, m.castle)).sort(), expectedKeys);
+  assert.ok(enemy.body.moves.every((m) => m.from[1] === "7" || m.from[1] === "8"));
+  assert.ok(enemy.body.moves.every((m) => typeof m.san === "string" && m.san.length > 0));
+  // The default endpoint still returns the player's own moves.
+  const own = await get("/api/match/moves");
+  assert.equal(own.status, 200);
+  assert.ok(own.body.moves.length > 20);
+  assert.ok(own.body.moves.every((m) => m.from[1] === "1" || m.from[1] === "2"));
+  // Moving the wrong side's piece is still rejected — the view is read-only.
+  const bad = await post("/api/match/move", { from: "e7", to: "e5" });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.body.error, "illegal_move");
+  await post("/api/match/abandon");
+});
+
 test("match: promotion defaults to witch; illegal promotions rejected", async () => {
   const promo = crafted([
     ["warlord", "w", "a1"], ["warlord", "b", "h8"], ["soldier", "w", "e7"],

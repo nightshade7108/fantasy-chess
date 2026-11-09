@@ -111,6 +111,7 @@ async function refreshState() {
     S.shop.packs = staticCache.packs;
   }
   movesCache = { board: null, turn: null, moves: null };
+  enemyMovesCache = { board: null, moves: null };
   renderHeader();
   renderTab(currentTab);
 }
@@ -127,6 +128,22 @@ async function getMoves() {
   const res = await api("/api/match/moves");
   movesCache = { board: m.board, turn: m.turn, moves: res.moves || [] };
   return movesCache.moves;
+}
+
+/* The enemy's legal moves for the current position — view-only inspection
+   (tapping an enemy hero shows what IT can do). Same cache shape as
+   getMoves, keyed by the board object reference: a new position always
+   means a new board object from the server. */
+let enemyMovesCache = { board: null, moves: null };
+async function getEnemyMoves() {
+  const m = S.activeMatch;
+  if (!m) return [];
+  if (enemyMovesCache.moves && enemyMovesCache.board === m.board) {
+    return enemyMovesCache.moves;
+  }
+  const res = await api("/api/match/moves?color=b");
+  enemyMovesCache = { board: m.board, moves: res.moves || [] };
+  return enemyMovesCache.moves;
 }
 
 function toast(msg, isError) {
@@ -402,7 +419,9 @@ function matchHTML(m, diff) {
    language. It lives in the side column beside the board, updates when a
    different piece is selected, and disappears on deselect or after a move.
    Every ability affects movement (see the fx glossary in heroes.js), so the
-   ability line is always shown. */
+   ability line is always shown. An enemy hero (battleSel.enemy) shows the
+   same dialog, clearly marked with an Enemy tag and slate styling — view
+   only, never a move input. */
 function selectedMovesHTML() {
   if (!battleSel || !S.activeMatch) return "";
   const m = S.activeMatch;
@@ -420,11 +439,13 @@ function selectedMovesHTML() {
     items += "<li>" + esc(describeMovesTo(byDest[to], to, battleSel.from, m.board)) + "</li>";
   });
   if (!dests.length) items = "<li>No legal moves right now.</li>";
-  return '<div class="sel-dialog" role="status" aria-live="polite">' +
+  return '<div class="sel-dialog' + (battleSel.enemy ? " enemy" : "") + '" role="status" aria-live="polite">' +
     '<div class="sel-head">' + miniChipHTML({ role: cell.role, color: cell.color, hero: cell.hero }) +
-    "<div><strong>" + esc(name) + "</strong><br><span class='muted small'>" + esc(ROLE_LABEL[cell.role]) +
+    "<div><strong>" + esc(name) + "</strong>" + (battleSel.enemy ? ' <span class="sel-enemy-tag">⚔ Enemy</span>' : "") +
+    "<br><span class='muted small'>" + esc(ROLE_LABEL[cell.role]) +
     (hero ? " · " + esc(RARITY_LABEL[hero.rarity]) : "") + " · " + esc(battleSel.from) + "</span></div></div>" +
     (hero ? '<p class="sel-ability">✦ ' + esc(hero.ability) + "</p>" : "") +
+    (battleSel.enemy ? '<p class="sel-viewonly">View only — this hero belongs to your opponent. You cannot move it.</p>' : "") +
     "<p><strong>Possible moves (" + dests.length + "):</strong></p>" +
     '<ul class="sel-moves">' + items + "</ul></div>";
 }
@@ -549,6 +570,19 @@ async function claimStipend() {
   } catch (e) { showError(e); }
 }
 
+/* Destination highlights for a piece's move list: "capture" where the move
+   takes something (en passant lands on an empty square, so the SAN's "x"
+   is what marks it a capture), "move" otherwise. Shared by the player's
+   own pieces and the view-only enemy inspection. */
+function movesToDests(moves, board) {
+  const dests = {};
+  (moves || []).forEach((mv) => {
+    const target = cellAt(board, mv.to);
+    dests[mv.to] = (target || (mv.san && mv.san.indexOf("x") !== -1)) ? "capture" : "move";
+  });
+  return dests;
+}
+
 function wireBattleBoard(m) {
   const boardEl = $("#tab-battle .board");
   if (!boardEl) return;
@@ -558,8 +592,10 @@ function wireBattleBoard(m) {
     if (m.turn !== "w" || m.status !== "active") return;
     const sq = sqEl.dataset.square;
     const cell = cellAt(m.board, sq);
-    // Click a highlighted destination -> move there.
-    if (battleSel && battleSel.dests[sq]) {
+    // Click a highlighted destination -> move there. Only when viewing one
+    // of the player's own pieces: an enemy view is read-only, so a dest
+    // tap there falls through to deselect below instead of moving.
+    if (battleSel && battleSel.dests[sq] && !battleSel.enemy) {
       await doBattleMove(battleSel.from, sq, battleSel.dests[sq]);
       return;
     }
@@ -570,14 +606,25 @@ function wireBattleBoard(m) {
       try {
         const allMoves = await getMoves();
         const moves = allMoves.filter((mv) => mv.from === sq);
-        const dests = {};
-        moves.forEach((mv) => {
-          const target = cellAt(m.board, mv.to);
-          // En passant lands on an empty square, so the board alone cannot
-          // tell it from a quiet move — the SAN carries the capture ("x").
-          dests[mv.to] = (target || (mv.san && mv.san.indexOf("x") !== -1)) ? "capture" : "move";
-        });
+        const dests = movesToDests(moves, m.board);
         battleSel = { from: sq, dests: dests, moves: moves };
+        if (!Object.keys(dests).length) toast("That hero has no legal moves right now.", true);
+        updateSelectionUI();
+      } catch (e) { showError(e); }
+      return;
+    }
+    // Click an enemy piece -> view-only: show ITS legal moves in the
+    // dialog, marked as the opponent's. Never a move input: tapping a
+    // destination while viewing an enemy piece just deselects (the
+    // guarded branch above refuses to move), and tapping one of the
+    // player's own pieces returns to that piece's own moves.
+    if (cell && cell.color === "b") {
+      if (battleSel && battleSel.from === sq) { battleSel = null; updateSelectionUI(); return; }
+      try {
+        const allMoves = await getEnemyMoves();
+        const moves = allMoves.filter((mv) => mv.from === sq);
+        const dests = movesToDests(moves, m.board);
+        battleSel = { from: sq, dests: dests, moves: moves, enemy: true };
         if (!Object.keys(dests).length) toast("That hero has no legal moves right now.", true);
         updateSelectionUI();
       } catch (e) { showError(e); }

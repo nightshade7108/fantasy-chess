@@ -101,6 +101,35 @@ test("en passant works", () => {
   assert.equal(g.board[4 * 8 + 3], null, "captured soldier removed from d5");
 });
 
+test("legalMovesFor: moves for the non-turn side, no phantom en passant", () => {
+  const g = createGame(PLAIN, PLAIN);
+  const black = engine.legalMovesFor(g, "b");
+  assert.equal(black.length, 20);
+  assert.ok(black.every((m) => m.color === "b"));
+  assert.ok(!black.some((m) => m.enPassant));
+  assert.ok(black.every((m) => typeof m.san === "string" && m.san.length > 0));
+  // Identity: asking for the side to move is the same set as legalMoves().
+  const key = (m) => m.from.r + "," + m.from.f + ">" + m.to.r + "," + m.to.f + (m.promotion || "") + (m.castle || "");
+  assert.deepEqual(
+    engine.legalMovesFor(g, "w").map(key).sort(),
+    legalMoves(g).map(key).sort()
+  );
+  // After 1.e4 a6 2.e5 d5 the white pawn on e5 can capture en passant on
+  // d6 — but black, inspected from the same position, has no ep capture:
+  // the right belongs to the side to move (it was created by black's own
+  // double march, so the victim square is empty for black).
+  const s = playMoves(createGame(PLAIN, PLAIN), [["e2", "e4"], ["a7", "a6"], ["e4", "e5"], ["d7", "d5"]]);
+  assert.equal(s.ep, engine.idx(5, 3)); // d6
+  const whiteEp = legalMoves(s).find((m) => m.enPassant);
+  assert.ok(whiteEp);
+  assert.equal(toAlgebraic(whiteEp.from), "e5");
+  assert.equal(toAlgebraic(whiteEp.to), "d6");
+  const blackMoves = engine.legalMovesFor(s, "b");
+  assert.ok(blackMoves.length > 0);
+  assert.ok(blackMoves.every((m) => m.color === "b"));
+  assert.ok(!blackMoves.some((m) => m.enPassant), "no phantom ep capture for black");
+});
+
 test("castling: available when clear, blocked by check", () => {
   let g = createGame(PLAIN, PLAIN);
   // Clear kingside: Nf3, e3, Bc4, O-O.

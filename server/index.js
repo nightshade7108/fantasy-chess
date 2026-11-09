@@ -56,7 +56,7 @@ function asJson(v) {
 }
 
 function publicHero(h) {
-  return { id: h.id, name: h.name, role: h.role, rarity: h.rarity, power: h.power, ability: h.ability, flavor: h.flavor };
+  return { id: h.id, name: h.name, role: h.role, rarity: h.rarity, power: h.power, ability: h.ability, flavor: h.flavor, portrait: h.portrait || null };
 }
 
 // --- Match (engine state <-> DB row) ---

@@ -500,11 +500,16 @@ function filterBtn(kind, value, label) {
   return '<button class="filter-btn' + (active ? " active" : "") + '" data-kind="' + kind + '" data-value="' + value + '">' + esc(label) + "</button>";
 }
 
-/* Illustrated monogram portrait: rarity gradient + large role icon + the
-   hero's initial letter. (No portrait image URLs exist for the 72 heroes.) */
+/* Hero portrait: the generated anime portrait image when the hero has one
+   (heroes.js `portrait` field), falling back to the illustrated monogram
+   (rarity gradient + large role icon + initial) when it does not. */
 function portraitHTML(hero, big) {
+  const cls = "portrait rarity-" + hero.rarity + (big ? " detail-portrait" : "");
+  if (hero.portrait) {
+    return '<div class="' + cls + '" aria-hidden="true"><img src="' + esc(hero.portrait) + '" alt="" loading="lazy"></div>';
+  }
   const initial = (hero.name || "?").trim().charAt(0);
-  return '<div class="portrait rarity-' + hero.rarity + (big ? " detail-portrait" : "") + '" aria-hidden="true">' +
+  return '<div class="' + cls + '" aria-hidden="true">' +
     '<span class="portrait-initial">' + esc(initial) + "</span>" +
     '<span class="portrait-icon">' + icon(hero.role) + "</span></div>";
 }
